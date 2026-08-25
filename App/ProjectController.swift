@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Observation
 import OSLog
 import UniformTypeIdentifiers
@@ -6,16 +7,26 @@ import UniformTypeIdentifiers
 @MainActor
 @Observable
 final class ProjectController {
+    enum SegmentPreviewMode: String, CaseIterable, Identifiable {
+        case original
+        case voice
+        case mixed
+
+        var id: Self { self }
+    }
+
     private(set) var project: DubProject?
     private(set) var projectURL: URL?
     private(set) var isLoadingVideo = false
     private(set) var isLoadingSubtitles = false
     private(set) var embeddedSubtitleTracks: [EmbeddedSubtitleTrack] = []
     private(set) var selectedSegmentID: UUID?
+    var segmentPreviewMode: SegmentPreviewMode = .mixed
     var errorMessage: String?
 
     let playback = PlaybackController()
     let recording = RecordingController()
+    let waveforms = WaveformController()
 
     private let projectStore = ProjectStore()
     private let metadataLoader = VideoMetadataLoader()
@@ -28,6 +39,12 @@ final class ProjectController {
     @ObservationIgnored private var automaticStopTask: Task<Void, Never>?
     @ObservationIgnored private var finishingRecordingTask: Task<Void, Never>?
     @ObservationIgnored private var pendingTake: PendingRecordingTake?
+
+    init() {
+        playback.onPlaybackStopped = { [weak self] in
+            self?.finishSegmentPreview()
+        }
+    }
 
     func showNewProjectPanel() {
         let panel = NSSavePanel()
@@ -116,9 +133,15 @@ final class ProjectController {
         return project?.segments.first { $0.id == selectedSegmentID }
     }
 
+    var selectedTake: RecordingTake? {
+        guard let segment = selectedSegment, let takeID = segment.selectedTakeID else { return nil }
+        return segment.takes.first { $0.id == takeID }
+    }
+
     func selectSegment(_ id: UUID?) {
         guard !recording.isActive else { return }
         selectedSegmentID = id
+        refreshWaveforms()
         guard let segment = selectedSegment else { return }
         playback.pause()
         playback.seek(to: segment.startTime)
@@ -133,8 +156,7 @@ final class ProjectController {
     }
 
     func playSelectedSegment() {
-        guard let segment = selectedSegment else { return }
-        playback.play(from: segment.startTime, to: segment.endTime)
+        previewSelectedSegment(mode: .original)
     }
 
     func playSelectedSegmentWithContext() {
@@ -143,6 +165,45 @@ final class ProjectController {
             from: max(0, segment.startTime - settings.preRollDuration),
             to: min(playback.duration, segment.endTime + settings.postRollDuration)
         )
+    }
+
+    func previewSelectedSegment(mode: SegmentPreviewMode? = nil) {
+        guard let segment = selectedSegment, let project else { return }
+        let mode = mode ?? segmentPreviewMode
+        segmentPreviewMode = mode
+        recording.stopTakePlayback()
+
+        if mode != .original, selectedTake == nil {
+            errorMessage = "Record or select a take before previewing the dubbed voice."
+            return
+        }
+
+        playback.play(from: segment.startTime, to: segment.endTime) { [weak self] in
+            guard let self else { return }
+            switch mode {
+            case .original:
+                playback.player.volume = project.settings.originalVolume
+            case .voice:
+                playback.player.volume = 0
+            case .mixed:
+                playback.player.volume = project.settings.duckedOriginalVolume
+            }
+
+            guard mode != .original, let take = selectedTake,
+                  let url = recordingURL(for: take) else { return }
+            do {
+                try recording.playTake(id: take.id, at: url, gain: take.gain)
+            } catch {
+                present(error, fallback: "The selected recording could not be played.")
+            }
+        }
+    }
+
+    func updateDuckedOriginalVolume(_ volume: Float) {
+        guard var project else { return }
+        project.settings.duckedOriginalVolume = min(max(volume, 0), 1)
+        self.project = project
+        save()
     }
 
     func toggleRecording() {
@@ -180,6 +241,7 @@ final class ProjectController {
             segment.selectedTakeID = takeID
             segment.status = .recorded
         }
+        refreshWaveforms()
     }
 
     func acceptSelectedTakeAndAdvance() {
@@ -218,6 +280,7 @@ final class ProjectController {
                 segment.selectedTakeID = segment.takes.last?.id
                 segment.status = segment.takes.isEmpty ? .pending : .recorded
             }
+            refreshWaveforms()
         } catch {
             present(error, fallback: "The recording could not be deleted.")
         }
@@ -289,6 +352,7 @@ final class ProjectController {
             }
             playback.clear()
             selectedSegmentID = nil
+            refreshWaveforms()
             embeddedSubtitleTracks = []
             return true
         } catch {
@@ -352,6 +416,7 @@ final class ProjectController {
             project.modifiedAt = Date()
             self.project = project
             playback.load(url: playbackSource.url, duration: metadata.duration)
+            selectSegment(nil)
             save()
             await refreshEmbeddedSubtitleTracks(sourceURL: url)
         } catch {
@@ -381,8 +446,7 @@ final class ProjectController {
             project.segments = makeSegments(from: result.cues)
             project.modifiedAt = Date()
             self.project = project
-            selectedSegmentID = project.segments.first?.id
-            if let first = project.segments.first { playback.seek(to: first.startTime) }
+            selectSegment(project.segments.first?.id)
             save()
 
             if result.skippedCueCount > 0 {
@@ -414,8 +478,7 @@ final class ProjectController {
             project.segments = makeSegments(from: result.cues)
             project.modifiedAt = Date()
             self.project = project
-            selectedSegmentID = project.segments.first?.id
-            if let first = project.segments.first { playback.seek(to: first.startTime) }
+            selectSegment(project.segments.first?.id)
             save()
         } catch {
             present(error, fallback: "The embedded subtitles could not be imported.")
@@ -548,6 +611,7 @@ final class ProjectController {
         project.segments[segmentIndex].status = .recorded
         project.modifiedAt = Date()
         self.project = project
+        refreshWaveforms()
         save()
     }
 
@@ -563,6 +627,23 @@ final class ProjectController {
 
     private func recordingURL(for take: RecordingTake) -> URL? {
         projectURL?.appending(path: "recordings").appending(path: take.fileName)
+    }
+
+    private func refreshWaveforms() {
+        let segment = selectedSegment
+        let take = selectedTake
+        waveforms.load(
+            originalURL: playback.sourceURL,
+            segment: segment,
+            takeURL: take.flatMap(recordingURL(for:)),
+            take: take,
+            cacheRoot: projectURL?.appending(path: "waveform-cache", directoryHint: .isDirectory)
+        )
+    }
+
+    private func finishSegmentPreview() {
+        recording.stopTakePlayback()
+        playback.player.volume = project?.settings.originalVolume ?? 1
     }
 
     private func restoreSourceVideoIfPresent() async throws {

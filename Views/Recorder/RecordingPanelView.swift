@@ -6,9 +6,13 @@ struct RecordingPanelView: View {
     var body: some View {
         if let segment = controller.selectedSegment {
             VStack(spacing: 12) {
+                waveformStack
+
                 if !segment.takes.isEmpty {
                     takeStrip(segment)
                 }
+
+                previewControls(segment)
 
                 HStack(spacing: 14) {
                     microphonePicker
@@ -33,6 +37,82 @@ struct RecordingPanelView: View {
             .background(.bar)
             .onAppear {
                 controller.recording.devices.refresh()
+            }
+        }
+    }
+
+    private var waveformStack: some View {
+        VStack(spacing: 5) {
+            waveformRow(label: "Original", samples: controller.waveforms.originalSamples, color: .secondary)
+            waveformRow(label: "Take", samples: controller.waveforms.takeSamples, color: .accentColor)
+        }
+        .overlay(alignment: .trailing) {
+            if controller.waveforms.isLoading {
+                ProgressView()
+                    .controlSize(.mini)
+                    .padding(.trailing, 4)
+            }
+        }
+    }
+
+    private func waveformRow(label: String, samples: [Float], color: Color) -> some View {
+        HStack(spacing: 9) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 48, alignment: .trailing)
+            ZStack {
+                Capsule()
+                    .fill(.secondary.opacity(0.08))
+                if samples.isEmpty {
+                    Rectangle()
+                        .fill(.secondary.opacity(0.22))
+                        .frame(height: 1)
+                        .padding(.horizontal, 5)
+                } else {
+                    WaveformView(samples: samples, color: color)
+                        .padding(.horizontal, 4)
+                }
+            }
+            .frame(height: 27)
+        }
+    }
+
+    private func previewControls(_ segment: DubSegment) -> some View {
+        HStack(spacing: 10) {
+            Text("PREVIEW")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Picker("Preview", selection: $controller.segmentPreviewMode) {
+                Text("Original").tag(ProjectController.SegmentPreviewMode.original)
+                Text("Voice").tag(ProjectController.SegmentPreviewMode.voice)
+                Text("Mixed").tag(ProjectController.SegmentPreviewMode.mixed)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 220)
+
+            Button {
+                controller.previewSelectedSegment()
+            } label: {
+                Label("Preview", systemImage: "play.fill")
+            }
+            .disabled(controller.recording.isActive || (controller.segmentPreviewMode != .original && segment.selectedTakeID == nil))
+
+            if controller.segmentPreviewMode == .mixed {
+                Spacer()
+                Text("Original")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Slider(value: duckingVolume, in: 0...1)
+                    .frame(width: 110)
+                Text((controller.project?.settings.duckedOriginalVolume ?? 0.2).formatted(.percent.precision(.fractionLength(0))))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 34, alignment: .trailing)
+            } else {
+                Spacer()
             }
         }
     }
@@ -179,6 +259,13 @@ struct RecordingPanelView: View {
         Binding(
             get: { controller.project?.settings.recordingCountdownSeconds ?? 3 },
             set: { controller.updateRecordingCountdown($0) }
+        )
+    }
+
+    private var duckingVolume: Binding<Float> {
+        Binding(
+            get: { controller.project?.settings.duckedOriginalVolume ?? 0.2 },
+            set: { controller.updateDuckedOriginalVolume($0) }
         )
     }
 }

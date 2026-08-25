@@ -1,4 +1,3 @@
-import AVKit
 import SwiftUI
 
 struct VideoWorkspaceView: View {
@@ -11,7 +10,7 @@ struct VideoWorkspaceView: View {
                 Color.black
 
                 if controller.project?.sourceVideo != nil {
-                    VideoPlayer(player: controller.playback.player)
+                    PlayerSurfaceView(player: controller.playback.player)
                 } else {
                     emptyPlayer
                 }

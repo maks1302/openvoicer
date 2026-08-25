@@ -19,6 +19,7 @@ final class RecordingController {
 
     @ObservationIgnored private let recorder = AudioRecorder()
     @ObservationIgnored private var audioPlayer: AVAudioPlayer?
+    @ObservationIgnored private var playbackCompletionTask: Task<Void, Never>?
 
     var isActive: Bool { state != .idle }
     var isRecording: Bool { state == .recording }
@@ -80,9 +81,19 @@ final class RecordingController {
         guard player.play() else { throw RecordingPlaybackError.couldNotPlay }
         audioPlayer = player
         playingTakeID = id
+        playbackCompletionTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(player.duration))
+                guard !Task.isCancelled, self?.playingTakeID == id else { return }
+                self?.audioPlayer = nil
+                self?.playingTakeID = nil
+            } catch { }
+        }
     }
 
     func stopTakePlayback() {
+        playbackCompletionTask?.cancel()
+        playbackCompletionTask = nil
         audioPlayer?.stop()
         audioPlayer = nil
         playingTakeID = nil
