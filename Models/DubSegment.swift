@@ -1,5 +1,11 @@
 import Foundation
 
+struct SourceSeparationAsset: Codable, Hashable, Sendable {
+    var fileName: String
+    var preRollDuration: TimeInterval
+    var modelID: String
+}
+
 struct DubSegment: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     var startTime: TimeInterval
@@ -10,6 +16,7 @@ struct DubSegment: Identifiable, Codable, Hashable, Sendable {
     var takes: [RecordingTake]
     var selectedTakeID: UUID?
     var notes: String?
+    var separatedBackground: SourceSeparationAsset?
 
     init(
         id: UUID = UUID(),
@@ -26,6 +33,7 @@ struct DubSegment: Identifiable, Codable, Hashable, Sendable {
         takes = []
         selectedTakeID = nil
         notes = nil
+        separatedBackground = nil
     }
 
     var duration: TimeInterval {

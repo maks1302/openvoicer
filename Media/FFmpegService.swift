@@ -120,6 +120,51 @@ actor FFmpegService {
         }
     }
 
+    func extractAudioSegment(
+        from source: URL,
+        startTime: TimeInterval,
+        duration: TimeInterval,
+        preserveMultichannel: Bool = false,
+        destination: URL
+    ) async throws {
+        guard let executableURL = Self.findExecutable(named: "ffmpeg") else {
+            throw FFmpegError.notInstalled
+        }
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let logURL = destination.deletingLastPathComponent().appending(path: "ffmpeg-separation.log")
+        var arguments = [
+            "-hide_banner", "-nostdin", "-y",
+            "-ss", startTime.formatted(.number.locale(Locale(identifier: "en_US_POSIX")).precision(.fractionLength(3))),
+            "-i", "pipe:0",
+            "-t", duration.formatted(.number.locale(Locale(identifier: "en_US_POSIX")).precision(.fractionLength(3))),
+            "-map", "0:a:0",
+            "-vn", "-sn",
+        ]
+        if !preserveMultichannel {
+            arguments += ["-ac", "2"]
+        }
+        arguments += [
+            "-ar", "48000", "-c:a", "pcm_s16le",
+            "-f", "wav", "pipe:1"
+        ]
+
+        let result = try await Task.detached(priority: .userInitiated) {
+            try MediaProcess.run(
+                executableURL: executableURL,
+                arguments: arguments,
+                inputURL: source,
+                outputURL: destination,
+                logURL: logURL
+            )
+        }.value
+        guard result.exitCode == 0 else {
+            throw FFmpegError.audioExtractionFailed(details: result.errorSummary)
+        }
+    }
+
     private nonisolated static func findExecutable(named name: String) -> URL? {
         let fileManager = FileManager.default
         let candidates = [
@@ -186,6 +231,7 @@ enum FFmpegError: LocalizedError {
     case probeFailed
     case unsupportedSubtitleCodec(String)
     case subtitleExtractionFailed
+    case audioExtractionFailed(details: String)
 
     var errorDescription: String? {
         switch self {
@@ -201,6 +247,8 @@ enum FFmpegError: LocalizedError {
             "The embedded \(codec.uppercased()) subtitle track is image-based or otherwise cannot be converted to editable dialogue."
         case .subtitleExtractionFailed:
             "DubLab could not extract the selected embedded subtitle track."
+        case .audioExtractionFailed:
+            "DubLab could not prepare this section of the movie audio for dialogue separation."
         }
     }
 }

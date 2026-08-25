@@ -11,6 +11,7 @@ final class ProjectController {
         case original
         case voice
         case mixed
+        case clean
 
         var id: Self { self }
     }
@@ -27,6 +28,7 @@ final class ProjectController {
     let playback = PlaybackController()
     let recording = RecordingController()
     let waveforms = WaveformController()
+    let sourceSeparation = SourceSeparationController()
 
     private let projectStore = ProjectStore()
     private let metadataLoader = VideoMetadataLoader()
@@ -187,16 +189,112 @@ final class ProjectController {
                 playback.player.volume = 0
             case .mixed:
                 playback.player.volume = project.settings.duckedOriginalVolume
+            case .clean:
+                playback.player.volume = 0
             }
 
             guard mode != .original, let take = selectedTake,
                   let url = recordingURL(for: take) else { return }
             do {
-                try recording.playTake(id: take.id, at: url, gain: take.gain)
+                if mode == .clean,
+                   let asset = segment.separatedBackground,
+                   let backgroundURL = separatedBackgroundURL(for: asset) {
+                    try recording.playSeparatedPreview(
+                        takeID: take.id,
+                        takeURL: url,
+                        takeGain: take.gain,
+                        backgroundURL: backgroundURL,
+                        backgroundOffset: asset.preRollDuration,
+                        backgroundGain: project.settings.originalVolume
+                    )
+                } else {
+                    try recording.playTake(id: take.id, at: url, gain: take.gain)
+                }
             } catch {
                 present(error, fallback: "The selected recording could not be played.")
             }
         }
+    }
+
+    func prepareCleanBackground() {
+        guard let segment = selectedSegment,
+              let projectURL,
+              let sourceURL = playback.sourceURL else { return }
+        playback.pause()
+        recording.stopTakePlayback()
+
+        let preRoll = min(2, segment.startTime)
+        let postRoll = min(2, max(0, playback.duration - segment.endTime))
+        let extractionStart = segment.startTime - preRoll
+        let extractionDuration = segment.duration + preRoll + postRoll
+        let isMultichannel = (project?.sourceVideo?.metadata.audioTracks.first?.channelCount ?? 2) >= 6
+        let dialogueReduction = isMultichannel ? 1.35 : 1.55
+        let workingDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "DubLab-Separation-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let inputURL = workingDirectory.appending(path: "input.wav")
+        let outputURL = workingDirectory.appending(path: "background.wav")
+        let relativeName = "\(segment.id.uuidString).wav"
+        let finalURL = projectURL.appending(path: "separation-cache").appending(path: relativeName)
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try FileManager.default.createDirectory(at: workingDirectory, withIntermediateDirectories: true)
+                try await ffmpegService.extractAudioSegment(
+                    from: sourceURL,
+                    startTime: extractionStart,
+                    duration: extractionDuration,
+                    preserveMultichannel: isMultichannel,
+                    destination: inputURL
+                )
+                sourceSeparation.prepare(
+                    inputURL: inputURL,
+                    outputURL: outputURL,
+                    dialogueReduction: dialogueReduction,
+                    centerCancellation: isMultichannel
+                ) { [weak self] result in
+                    guard let self else { return }
+                    defer { try? FileManager.default.removeItem(at: workingDirectory) }
+                    switch result {
+                    case .success:
+                        do {
+                            try FileManager.default.createDirectory(
+                                at: finalURL.deletingLastPathComponent(),
+                                withIntermediateDirectories: true
+                            )
+                            if FileManager.default.fileExists(atPath: finalURL.path) {
+                                _ = try FileManager.default.replaceItemAt(finalURL, withItemAt: outputURL)
+                            } else {
+                                try FileManager.default.moveItem(at: outputURL, to: finalURL)
+                            }
+                            updateSelectedSegment { current in
+                                current.separatedBackground = SourceSeparationAsset(
+                                    fileName: relativeName,
+                                    preRollDuration: preRoll,
+                                    modelID: isMultichannel
+                                        ? "\(BanditSourceSeparationService.modelID)-adaptive-center"
+                                        : "\(BanditSourceSeparationService.modelID)-strong"
+                                )
+                            }
+                            segmentPreviewMode = .clean
+                        } catch {
+                            present(error, fallback: "The clean background could not be saved in the project.")
+                        }
+                    case .failure(let error):
+                        if !(error is CancellationError) {
+                            present(error, fallback: "Dialogue separation failed.")
+                        }
+                    }
+                }
+            } catch {
+                try? FileManager.default.removeItem(at: workingDirectory)
+                present(error, fallback: "The movie audio could not be prepared for dialogue separation.")
+            }
+        }
+    }
+
+    func cancelSourceSeparation() {
+        sourceSeparation.cancel()
     }
 
     func updateDuckedOriginalVolume(_ volume: Float) {
@@ -627,6 +725,12 @@ final class ProjectController {
 
     private func recordingURL(for take: RecordingTake) -> URL? {
         projectURL?.appending(path: "recordings").appending(path: take.fileName)
+    }
+
+    private func separatedBackgroundURL(for asset: SourceSeparationAsset) -> URL? {
+        guard let projectURL else { return nil }
+        let url = projectURL.appending(path: "separation-cache").appending(path: asset.fileName)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     private func refreshWaveforms() {

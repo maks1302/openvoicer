@@ -19,6 +19,7 @@ final class RecordingController {
 
     @ObservationIgnored private let recorder = AudioRecorder()
     @ObservationIgnored private var audioPlayer: AVAudioPlayer?
+    @ObservationIgnored private var backgroundPlayer: AVAudioPlayer?
     @ObservationIgnored private var playbackCompletionTask: Task<Void, Never>?
 
     var isActive: Bool { state != .idle }
@@ -91,11 +92,46 @@ final class RecordingController {
         }
     }
 
+    func playSeparatedPreview(
+        takeID: UUID,
+        takeURL: URL,
+        takeGain: Float,
+        backgroundURL: URL,
+        backgroundOffset: TimeInterval,
+        backgroundGain: Float
+    ) throws {
+        stopTakePlayback()
+        let voice = try AVAudioPlayer(contentsOf: takeURL)
+        let background = try AVAudioPlayer(contentsOf: backgroundURL)
+        voice.volume = min(max(takeGain, 0), 1)
+        background.volume = min(max(backgroundGain, 0), 1)
+        background.currentTime = min(max(backgroundOffset, 0), background.duration)
+        voice.prepareToPlay()
+        background.prepareToPlay()
+
+        let deviceTime = max(voice.deviceCurrentTime, background.deviceCurrentTime) + 0.02
+        guard voice.play(atTime: deviceTime), background.play(atTime: deviceTime) else {
+            throw RecordingPlaybackError.couldNotPlay
+        }
+        audioPlayer = voice
+        backgroundPlayer = background
+        playingTakeID = takeID
+        playbackCompletionTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(voice.duration))
+                guard !Task.isCancelled, self?.playingTakeID == takeID else { return }
+                self?.stopTakePlayback()
+            } catch { }
+        }
+    }
+
     func stopTakePlayback() {
         playbackCompletionTask?.cancel()
         playbackCompletionTask = nil
         audioPlayer?.stop()
+        backgroundPlayer?.stop()
         audioPlayer = nil
+        backgroundPlayer = nil
         playingTakeID = nil
     }
 

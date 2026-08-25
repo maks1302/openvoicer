@@ -88,17 +88,23 @@ struct RecordingPanelView: View {
                 Text("Original").tag(ProjectController.SegmentPreviewMode.original)
                 Text("Voice").tag(ProjectController.SegmentPreviewMode.voice)
                 Text("Mixed").tag(ProjectController.SegmentPreviewMode.mixed)
+                Text("Clean").tag(ProjectController.SegmentPreviewMode.clean)
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 220)
+            .frame(width: 290)
 
             Button {
                 controller.previewSelectedSegment()
             } label: {
                 Label("Preview", systemImage: "play.fill")
             }
-            .disabled(controller.recording.isActive || (controller.segmentPreviewMode != .original && segment.selectedTakeID == nil))
+            .disabled(
+                controller.recording.isActive
+                    || controller.sourceSeparation.isBusy
+                    || (controller.segmentPreviewMode != .original && segment.selectedTakeID == nil)
+                    || (controller.segmentPreviewMode == .clean && segment.separatedBackground == nil)
+            )
 
             if controller.segmentPreviewMode == .mixed {
                 Spacer()
@@ -111,9 +117,51 @@ struct RecordingPanelView: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .frame(width: 34, alignment: .trailing)
+            } else if controller.segmentPreviewMode == .clean || controller.sourceSeparation.isBusy {
+                Spacer()
+                cleanBackgroundControl(segment)
             } else {
                 Spacer()
             }
+        }
+    }
+
+    @ViewBuilder
+    private func cleanBackgroundControl(_ segment: DubSegment) -> some View {
+        if controller.sourceSeparation.isBusy {
+            ProgressView(value: controller.sourceSeparation.progress)
+                .frame(width: 120)
+            Text(controller.sourceSeparation.message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(maxWidth: 220, alignment: .leading)
+            Button("Cancel") {
+                controller.cancelSourceSeparation()
+            }
+            .controlSize(.small)
+        } else if segment.separatedBackground != nil {
+            Label("Dialogue removed", systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+            Button("Reprocess") {
+                controller.prepareCleanBackground()
+            }
+            .controlSize(.small)
+        } else {
+            Button {
+                controller.prepareCleanBackground()
+            } label: {
+                Label(
+                    controller.sourceSeparation.state == .unavailable
+                        ? "Set Up Voice Removal…"
+                        : "Remove Original Voice",
+                    systemImage: "waveform.badge.minus"
+                )
+            }
+            .controlSize(.small)
+            .disabled(controller.sourceSeparation.state == .checking)
+            .help("Locally separate speech from music and effects. First use downloads about 1.2 GB.")
         }
     }
 

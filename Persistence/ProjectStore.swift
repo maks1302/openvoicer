@@ -59,6 +59,7 @@ actor ProjectStore {
 private enum ProjectDirectory: String, CaseIterable {
     case recordings
     case waveformCache = "waveform-cache"
+    case separationCache = "separation-cache"
     case thumbnails
     case temp
 }
