@@ -2,11 +2,12 @@ import SwiftUI
 
 struct ProjectView: View {
     @Bindable var controller: ProjectController
+    @State private var isShowingInspector = false
 
     var body: some View {
         HSplitView {
-            ProjectSidebar(controller: controller)
-                .frame(minWidth: 230, idealWidth: 260, maxWidth: 310)
+            SegmentSidebarView(controller: controller)
+                .frame(minWidth: 260, idealWidth: 300, maxWidth: 370)
 
             VideoWorkspaceView(controller: controller)
                 .frame(minWidth: 620)
@@ -23,6 +24,14 @@ struct ProjectView: View {
                     )
                 }
 
+                SubtitleImportMenu(controller: controller)
+
+                Button {
+                    isShowingInspector.toggle()
+                } label: {
+                    Label("Project Info", systemImage: "info.circle")
+                }
+
                 Button {
                     controller.save()
                 } label: {
@@ -30,123 +39,88 @@ struct ProjectView: View {
                 }
             }
         }
+        .inspector(isPresented: $isShowingInspector) {
+            ProjectInspectorView(controller: controller)
+                .inspectorColumnWidth(min: 240, ideal: 280, max: 340)
+        }
     }
 }
 
-private struct ProjectSidebar: View {
+private struct ProjectInspectorView: View {
     let controller: ProjectController
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("PROJECT")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-
+        Form {
             if let source = controller.project?.sourceVideo {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        Label {
-                            Text(source.displayName)
-                                .lineLimit(2)
-                        } icon: {
-                            Image(systemName: "film")
-                                .foregroundStyle(.tint)
+                Section("Source Video") {
+                    LabeledContent("File", value: source.displayName)
+                    LabeledContent("Duration", value: TimeFormatter.playbackTime(source.metadata.duration))
+                    LabeledContent("Resolution", value: "\(source.metadata.width) × \(source.metadata.height)")
+                    if let frameRate = source.metadata.frameRate {
+                        LabeledContent(
+                            "Frame rate",
+                            value: frameRate.formatted(.number.precision(.fractionLength(0...2))) + " fps"
+                        )
+                    }
+                    if let codec = source.metadata.videoCodec {
+                        LabeledContent("Video codec", value: codec.uppercased())
+                    }
+                }
+
+                if !source.metadata.audioTracks.isEmpty {
+                    Section("Audio") {
+                        ForEach(source.metadata.audioTracks) { track in
+                            LabeledContent(track.title, value: audioDescription(track))
                         }
-                        .font(.headline)
-
-                        Divider()
-
-                        MetadataSection(metadata: source.metadata)
-                    }
-                    .padding(16)
-                }
-            } else {
-                ContentUnavailableView {
-                    Label("No Video", systemImage: "film")
-                } description: {
-                    Text("Import a source movie to begin.")
-                }
-            }
-
-            Spacer(minLength: 0)
-
-            if let url = controller.projectURL {
-                HStack(spacing: 6) {
-                    Image(systemName: "shippingbox")
-                    Text(url.lastPathComponent)
-                        .lineLimit(1)
-                }
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .padding(12)
-            }
-        }
-        .background(.bar)
-    }
-}
-
-private struct MetadataSection: View {
-    let metadata: VideoMetadata
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("VIDEO")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            MetadataRow(label: "Duration", value: TimeFormatter.playbackTime(metadata.duration))
-            MetadataRow(label: "Resolution", value: "\(metadata.width) × \(metadata.height)")
-            if let frameRate = metadata.frameRate {
-                MetadataRow(label: "Frame rate", value: frameRate.formatted(.number.precision(.fractionLength(0...2))) + " fps")
-            }
-            if let codec = metadata.videoCodec {
-                MetadataRow(label: "Codec", value: codec.uppercased())
-            }
-
-            if !metadata.audioTracks.isEmpty {
-                Text("AUDIO")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 8)
-
-                ForEach(metadata.audioTracks) { track in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(track.title)
-                            .font(.callout.weight(.medium))
-                        Text(audioDescription(track))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     }
                 }
             }
+
+            if let subtitleSource = controller.project?.subtitleSource {
+                Section("Dialogue") {
+                    LabeledContent("Source", value: subtitleSource.displayName)
+                    LabeledContent("Segments", value: controller.project?.segments.count.formatted() ?? "0")
+                }
+            }
         }
+        .formStyle(.grouped)
+        .padding(.top, 8)
     }
 
     private func audioDescription(_ track: AudioTrackMetadata) -> String {
         [
             track.codec?.uppercased(),
             track.channelCount.map { "\($0) ch" },
-            track.languageCode
+            track.languageCode?.uppercased()
         ]
         .compactMap { $0 }
         .joined(separator: " · ")
     }
 }
 
-private struct MetadataRow: View {
-    let label: String
-    let value: String
+private struct SubtitleImportMenu: View {
+    let controller: ProjectController
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(label)
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 8)
-            Text(value)
-                .multilineTextAlignment(.trailing)
+        Menu {
+            Button("Import SRT or WebVTT…") {
+                controller.showSubtitleImportPanel()
+            }
+
+            if !controller.embeddedSubtitleTracks.isEmpty {
+                Divider()
+                Section("Embedded in Video") {
+                    ForEach(controller.embeddedSubtitleTracks) { track in
+                        Button(track.displayName) {
+                            controller.importEmbeddedSubtitleTrack(track)
+                        }
+                        .disabled(!track.isTextBased)
+                    }
+                }
+            }
+        } label: {
+            Label("Subtitles", systemImage: "captions.bubble")
         }
-        .font(.callout)
+        .disabled(controller.project?.sourceVideo == nil || controller.isLoadingSubtitles)
     }
 }

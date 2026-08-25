@@ -47,6 +47,10 @@ struct VideoWorkspaceView: View {
                 isDropTargeted = isTargeted
             }
 
+            CurrentSegmentView(controller: controller)
+
+            RecordingPanelView(controller: controller)
+
             PlaybackControls(playback: controller.playback)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 14)

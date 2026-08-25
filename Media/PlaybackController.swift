@@ -11,6 +11,7 @@ final class PlaybackController {
 
     @ObservationIgnored private var periodicTimeObserver: Any?
     @ObservationIgnored private var endObserver: NSObjectProtocol?
+    @ObservationIgnored private var boundaryTimeObserver: Any?
 
     init() {
         periodicTimeObserver = player.addPeriodicTimeObserver(
@@ -40,9 +41,13 @@ final class PlaybackController {
         if let endObserver {
             NotificationCenter.default.removeObserver(endObserver)
         }
+        if let boundaryTimeObserver {
+            player.removeTimeObserver(boundaryTimeObserver)
+        }
     }
 
     func load(url: URL, duration: TimeInterval) {
+        cancelBoundedPlayback()
         player.replaceCurrentItem(with: AVPlayerItem(url: url))
         currentTime = 0
         self.duration = duration
@@ -50,6 +55,7 @@ final class PlaybackController {
     }
 
     func clear() {
+        cancelBoundedPlayback()
         player.pause()
         player.replaceCurrentItem(with: nil)
         currentTime = 0
@@ -58,6 +64,7 @@ final class PlaybackController {
     }
 
     func togglePlayback() {
+        cancelBoundedPlayback()
         if isPlaying {
             pause()
         } else {
@@ -75,6 +82,31 @@ final class PlaybackController {
     }
 
     func seek(to seconds: TimeInterval) {
+        cancelBoundedPlayback()
+        seekWithoutCancelling(to: seconds)
+    }
+
+    func play(from startTime: TimeInterval, to endTime: TimeInterval) {
+        guard endTime > startTime else { return }
+        cancelBoundedPlayback()
+        pause()
+
+        let end = min(endTime, duration)
+        boundaryTimeObserver = player.addBoundaryTimeObserver(
+            forTimes: [NSValue(time: CMTime(seconds: end, preferredTimescale: 600))],
+            queue: .main
+        ) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.pause()
+                self?.cancelBoundedPlayback()
+            }
+        }
+        seekWithoutCancelling(to: startTime)
+        player.play()
+        isPlaying = true
+    }
+
+    private func seekWithoutCancelling(to seconds: TimeInterval) {
         let target = min(max(seconds, 0), duration)
         player.seek(
             to: CMTime(seconds: target, preferredTimescale: 600),
@@ -86,5 +118,12 @@ final class PlaybackController {
 
     func skip(by seconds: TimeInterval) {
         seek(to: currentTime + seconds)
+    }
+
+    private func cancelBoundedPlayback() {
+        if let boundaryTimeObserver {
+            player.removeTimeObserver(boundaryTimeObserver)
+            self.boundaryTimeObserver = nil
+        }
     }
 }

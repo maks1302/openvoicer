@@ -35,11 +35,13 @@ actor ProjectStore {
 
     func load(from packageURL: URL) throws -> DubProject {
         let data = try Data(contentsOf: metadataURL(for: packageURL))
-        let project = try decoder.decode(DubProject.self, from: data)
+        var project = try decoder.decode(DubProject.self, from: data)
 
         guard project.schemaVersion <= DubProject.currentSchemaVersion else {
             throw ProjectStoreError.unsupportedSchema(project.schemaVersion)
         }
+
+        project.schemaVersion = DubProject.currentSchemaVersion
 
         return project
     }

@@ -14,23 +14,109 @@ actor FFmpegService {
             "-hide_banner",
             "-nostdin",
             "-y",
-            "-i", source.path,
+            "-i", "pipe:0",
             "-map", "0:v:0",
             "-map", "0:a?",
             "-map_metadata", "0",
             "-c", "copy",
             "-sn",
-            destination.path
+            "-f", "mov",
+            "-movflags", "+frag_keyframe+empty_moov+default_base_moof+delay_moov",
+            "pipe:1"
         ]
 
         logger.info("Creating an AVFoundation-compatible playback copy")
         let result = try await Task.detached(priority: .userInitiated) {
-            try MediaProcess.run(executableURL: executableURL, arguments: arguments, logURL: logURL)
+            try MediaProcess.run(
+                executableURL: executableURL,
+                arguments: arguments,
+                inputURL: source,
+                outputURL: destination,
+                logURL: logURL
+            )
         }.value
 
         guard result.exitCode == 0 else {
             logger.error("FFmpeg remux failed with exit code \(result.exitCode)")
             throw FFmpegError.processFailed(details: result.errorSummary)
+        }
+    }
+
+    func embeddedSubtitleTracks(in source: URL) async throws -> [EmbeddedSubtitleTrack] {
+        guard let executableURL = Self.findExecutable(named: "ffprobe") else {
+            throw FFmpegError.notInstalled
+        }
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "DubLab-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        let outputURL = temporaryDirectory.appending(path: "subtitle-tracks.json")
+        let logURL = temporaryDirectory.appending(path: "ffprobe.log")
+        let arguments = [
+            "-v", "error",
+            "-select_streams", "s",
+            "-show_entries", "stream=index,codec_name:stream_tags=language,title",
+            "-of", "json",
+            "-i", "pipe:0"
+        ]
+
+        let result = try await Task.detached(priority: .utility) {
+            try MediaProcess.run(
+                executableURL: executableURL,
+                arguments: arguments,
+                inputURL: source,
+                outputURL: outputURL,
+                logURL: logURL
+            )
+        }.value
+        guard result.exitCode == 0 else {
+            throw FFmpegError.probeFailed
+        }
+
+        let data = try Data(contentsOf: outputURL)
+        let probe = try JSONDecoder().decode(FFprobeSubtitleOutput.self, from: data)
+        return probe.streams.map {
+            EmbeddedSubtitleTrack(
+                streamIndex: $0.index,
+                codec: $0.codecName,
+                languageCode: $0.tags?.language,
+                title: $0.tags?.title
+            )
+        }
+    }
+
+    func extractSubtitleTrack(
+        _ track: EmbeddedSubtitleTrack,
+        from source: URL,
+        destination: URL
+    ) async throws {
+        guard track.isTextBased else { throw FFmpegError.unsupportedSubtitleCodec(track.codec) }
+        guard let executableURL = Self.findExecutable(named: "ffmpeg") else {
+            throw FFmpegError.notInstalled
+        }
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let logURL = destination.deletingLastPathComponent().appending(path: "ffmpeg-subtitles.log")
+        let arguments = [
+            "-hide_banner", "-nostdin", "-y",
+            "-i", "pipe:0",
+            "-map", "0:\(track.streamIndex)",
+            "-f", "srt",
+            "pipe:1"
+        ]
+
+        let result = try await Task.detached(priority: .userInitiated) {
+            try MediaProcess.run(
+                executableURL: executableURL,
+                arguments: arguments,
+                inputURL: source,
+                outputURL: destination,
+                logURL: logURL
+            )
+        }.value
+        guard result.exitCode == 0 else {
+            throw FFmpegError.subtitleExtractionFailed
         }
     }
 
@@ -51,17 +137,28 @@ private enum MediaProcess {
     nonisolated static func run(
         executableURL: URL,
         arguments: [String],
+        inputURL: URL,
+        outputURL: URL,
         logURL: URL
     ) throws -> MediaProcessResult {
         _ = FileManager.default.createFile(atPath: logURL.path, contents: nil)
         let logHandle = try FileHandle(forWritingTo: logURL)
-        defer { try? logHandle.close() }
+        try logHandle.truncate(atOffset: 0)
+        let inputHandle = try FileHandle(forReadingFrom: inputURL)
+        _ = FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+        let outputHandle = try FileHandle(forWritingTo: outputURL)
+        try outputHandle.truncate(atOffset: 0)
+        defer {
+            try? logHandle.close()
+            try? inputHandle.close()
+            try? outputHandle.close()
+        }
 
         let process = Process()
         process.executableURL = executableURL
         process.arguments = arguments
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
+        process.standardInput = inputHandle
+        process.standardOutput = outputHandle
         process.standardError = logHandle
 
         do {
@@ -86,6 +183,9 @@ enum FFmpegError: LocalizedError {
     case notInstalled
     case couldNotLaunch(String)
     case processFailed(details: String)
+    case probeFailed
+    case unsupportedSubtitleCodec(String)
+    case subtitleExtractionFailed
 
     var errorDescription: String? {
         switch self {
@@ -95,6 +195,33 @@ enum FFmpegError: LocalizedError {
             "FFmpeg could not be started. \(details)"
         case .processFailed:
             "FFmpeg could not create a playable copy of this MKV file. See ffmpeg-remux.log in the project’s temp folder for technical details."
+        case .probeFailed:
+            "DubLab could not inspect the embedded subtitle tracks."
+        case .unsupportedSubtitleCodec(let codec):
+            "The embedded \(codec.uppercased()) subtitle track is image-based or otherwise cannot be converted to editable dialogue."
+        case .subtitleExtractionFailed:
+            "DubLab could not extract the selected embedded subtitle track."
         }
+    }
+}
+
+private struct FFprobeSubtitleOutput: Decodable {
+    let streams: [Stream]
+
+    struct Stream: Decodable {
+        let index: Int
+        let codecName: String
+        let tags: Tags?
+
+        enum CodingKeys: String, CodingKey {
+            case index
+            case codecName = "codec_name"
+            case tags
+        }
+    }
+
+    struct Tags: Decodable {
+        let language: String?
+        let title: String?
     }
 }

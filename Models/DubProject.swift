@@ -1,7 +1,7 @@
 import Foundation
 
 struct DubProject: Codable, Identifiable, Hashable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 3
 
     var schemaVersion: Int
     let id: UUID
@@ -9,6 +9,9 @@ struct DubProject: Codable, Identifiable, Hashable, Sendable {
     let createdAt: Date
     var modifiedAt: Date
     var sourceVideo: SourceVideoReference?
+    var subtitleSource: SubtitleSource?
+    var segments: [DubSegment]
+    var speakers: [Speaker]
     var settings: ProjectSettings
 
     init(name: String) {
@@ -18,7 +21,29 @@ struct DubProject: Codable, Identifiable, Hashable, Sendable {
         createdAt = Date()
         modifiedAt = Date()
         sourceVideo = nil
+        subtitleSource = nil
+        segments = []
+        speakers = []
         settings = ProjectSettings()
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, id, name, createdAt, modifiedAt, sourceVideo
+        case subtitleSource, segments, speakers, settings
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        modifiedAt = try container.decode(Date.self, forKey: .modifiedAt)
+        sourceVideo = try container.decodeIfPresent(SourceVideoReference.self, forKey: .sourceVideo)
+        subtitleSource = try container.decodeIfPresent(SubtitleSource.self, forKey: .subtitleSource)
+        segments = try container.decodeIfPresent([DubSegment].self, forKey: .segments) ?? []
+        speakers = try container.decodeIfPresent([Speaker].self, forKey: .speakers) ?? []
+        settings = try container.decodeIfPresent(ProjectSettings.self, forKey: .settings) ?? ProjectSettings()
     }
 }
 
@@ -35,4 +60,39 @@ struct ProjectSettings: Codable, Hashable, Sendable {
     var postRollDuration: TimeInterval = 1.0
     var originalVolume: Float = 1.0
     var duckedOriginalVolume: Float = 0.2
+    var selectedInputDeviceID: String?
+    var recordingCountdownSeconds = 3
+    var recordingGain: Float = 1.0
+
+    private enum CodingKeys: String, CodingKey {
+        case preRollDuration, postRollDuration, originalVolume, duckedOriginalVolume
+        case selectedInputDeviceID, recordingCountdownSeconds, recordingGain
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        preRollDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .preRollDuration) ?? 1.5
+        postRollDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .postRollDuration) ?? 1.0
+        originalVolume = try container.decodeIfPresent(Float.self, forKey: .originalVolume) ?? 1.0
+        duckedOriginalVolume = try container.decodeIfPresent(Float.self, forKey: .duckedOriginalVolume) ?? 0.2
+        selectedInputDeviceID = try container.decodeIfPresent(String.self, forKey: .selectedInputDeviceID)
+        recordingCountdownSeconds = try container.decodeIfPresent(Int.self, forKey: .recordingCountdownSeconds) ?? 3
+        recordingGain = try container.decodeIfPresent(Float.self, forKey: .recordingGain) ?? 1.0
+    }
+}
+
+struct SubtitleSource: Codable, Hashable, Sendable {
+    enum Kind: String, Codable, Sendable {
+        case externalFile
+        case embeddedTrack
+    }
+
+    var kind: Kind
+    var displayName: String
+    var languageCode: String?
+    var streamIndex: Int?
+    var bookmarkData: Data?
+    var lastKnownPath: String?
 }

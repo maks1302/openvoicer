@@ -45,6 +45,54 @@ struct DubLabApp: App {
                 .keyboardShortcut("s")
                 .disabled(projectController.project == nil)
             }
+
+            CommandMenu("Dubbing") {
+                Button("Play Original Segment") {
+                    projectController.playSelectedSegment()
+                }
+                .keyboardShortcut("p", modifiers: [])
+                .disabled(projectController.selectedSegment == nil || projectController.recording.isActive)
+
+                Divider()
+
+                Button(projectController.recording.isActive ? "Stop Recording" : "Record") {
+                    projectController.toggleRecording()
+                }
+                .keyboardShortcut("r", modifiers: [])
+                .disabled(projectController.selectedSegment == nil || projectController.recording.state == .finishing)
+
+                Button("Record Another Take") {
+                    projectController.toggleRecording()
+                }
+                .keyboardShortcut("t", modifiers: [])
+                .disabled(
+                    projectController.recording.isActive ||
+                    projectController.selectedSegment?.takes.isEmpty != false
+                )
+
+                Button("Accept Take and Next") {
+                    projectController.acceptSelectedTakeAndAdvance()
+                }
+                .keyboardShortcut(.return, modifiers: [])
+                .disabled(
+                    projectController.recording.isActive ||
+                    projectController.selectedSegment?.selectedTakeID == nil
+                )
+
+                Divider()
+
+                Button("Previous Segment") {
+                    projectController.selectPreviousSegment()
+                }
+                .keyboardShortcut(.leftArrow, modifiers: [])
+                .disabled(projectController.selectedSegment == nil || projectController.recording.isActive)
+
+                Button("Next Segment") {
+                    projectController.selectNextSegment()
+                }
+                .keyboardShortcut(.rightArrow, modifiers: [])
+                .disabled(projectController.selectedSegment == nil || projectController.recording.isActive)
+            }
         }
     }
 }
