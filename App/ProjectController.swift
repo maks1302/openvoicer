@@ -241,7 +241,7 @@ final class ProjectController {
         let extractionDuration = segment.duration + preRoll + postRoll
         let isMultichannel = (selectedAudioTrack.channelCount ?? 2) >= 6
         let cleaningPreset = project?.settings.dialogueCleaningPreset ?? .balanced
-        let dialogueReduction = cleaningPreset.dialogueReduction(isMultichannel: isMultichannel)
+        let dialogueReduction = cleaningPreset.dialogueReduction
         let centerCancellationStrength = isMultichannel ? cleaningPreset.centerCancellationStrength : 0
         let workingDirectory = FileManager.default.temporaryDirectory
             .appending(path: "DubLab-Separation-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -266,6 +266,7 @@ final class ProjectController {
                     inputURL: inputURL,
                     outputURL: outputURL,
                     dialogueReduction: dialogueReduction,
+                    residualSuppression: cleaningPreset.residualSuppressionStrength,
                     centerCancellationStrength: centerCancellationStrength
                 ) { [weak self] result in
                     guard let self else { return }
@@ -286,9 +287,10 @@ final class ProjectController {
                                 current.separatedBackground = SourceSeparationAsset(
                                     fileName: relativeName,
                                     preRollDuration: preRoll,
-                                    modelID: isMultichannel
-                                        ? "\(BanditSourceSeparationService.modelID)-adaptive-center-\(cleaningPreset.rawValue)"
-                                        : "\(BanditSourceSeparationService.modelID)-\(cleaningPreset.rawValue)",
+                                    modelID: separationModelID(
+                                        track: selectedAudioTrack,
+                                        preset: cleaningPreset
+                                    ),
                                     sourceAudioTrackID: selectedAudioTrack.id
                                 )
                             }
@@ -362,10 +364,17 @@ final class ProjectController {
     func hasCleanBackgroundForSelectedTrack(_ segment: DubSegment) -> Bool {
         guard let asset = segment.separatedBackground,
               let selectedAudioTrack,
-              let tracks = project?.sourceVideo?.metadata.audioTracks else { return false }
-        if asset.sourceAudioTrackID == selectedAudioTrack.id { return true }
-        // Caches created before audio-track selection always came from stream zero.
-        return asset.sourceAudioTrackID == nil && tracks.first?.id == selectedAudioTrack.id
+              let preset = project?.settings.dialogueCleaningPreset else { return false }
+        return asset.sourceAudioTrackID == selectedAudioTrack.id
+            && asset.modelID == separationModelID(track: selectedAudioTrack, preset: preset)
+    }
+
+    private func separationModelID(
+        track: AudioTrackMetadata,
+        preset: DialogueCleaningPreset
+    ) -> String {
+        let channelProcessing = (track.channelCount ?? 2) >= 6 ? "adaptive-center" : "stereo"
+        return "\(BanditSourceSeparationService.modelID)-\(channelProcessing)-\(preset.rawValue)-residual-v2"
     }
 
     func toggleRecording() {

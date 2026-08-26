@@ -30,6 +30,7 @@ final class SourceSeparationController {
         inputURL: URL,
         outputURL: URL,
         dialogueReduction: Double,
+        residualSuppression: Double,
         centerCancellationStrength: Double,
         completion: @escaping @MainActor (Result<Void, Error>) -> Void
     ) {
@@ -55,6 +56,7 @@ final class SourceSeparationController {
                     inputURL: inputURL,
                     outputURL: outputURL,
                     dialogueReduction: dialogueReduction,
+                    residualSuppression: residualSuppression,
                     centerCancellationStrength: centerCancellationStrength
                 ) { [weak self] update in
                     Task { @MainActor in

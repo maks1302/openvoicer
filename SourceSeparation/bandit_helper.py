@@ -77,6 +77,60 @@ def cancel_center_bleed(audio: np.ndarray, strength: float) -> np.ndarray:
     return cancelled * float(np.clip(target_rms / current_rms, 0.8, 1.5))
 
 
+def suppress_residual_dialogue(
+    background: np.ndarray,
+    speech: np.ndarray,
+    sample_rate: int,
+    strength: float,
+) -> np.ndarray:
+    """Attenuate centered speech remnants without lowering the whole mix."""
+    if background.shape[0] != 2 or strength <= 0:
+        return background
+
+    frame_size = 2048
+    hop_size = 512
+    sample_count = background.shape[1]
+    padding = frame_size
+    padded_count = sample_count + padding * 2
+    frame_count = int(np.ceil(max(padded_count - frame_size, 0) / hop_size)) + 1
+    total_count = (frame_count - 1) * hop_size + frame_size
+    trailing = total_count - padded_count
+    background_padded = np.pad(background, ((0, 0), (padding, padding + trailing)))
+    speech_padded = np.pad(speech, ((0, 0), (padding, padding + trailing)))
+    output = np.zeros_like(background_padded)
+    normalization = np.zeros(total_count, dtype=np.float32)
+    window = np.hanning(frame_size).astype(np.float32)
+    frequencies = np.fft.rfftfreq(frame_size, 1 / sample_rate)
+    frequency_weight = np.ones_like(frequencies, dtype=np.float32)
+    frequency_weight[frequencies < 70] = 0
+    low_transition = (frequencies >= 70) & (frequencies < 160)
+    frequency_weight[low_transition] = (frequencies[low_transition] - 70) / 90
+    high_transition = (frequencies > 7_000) & (frequencies <= 11_000)
+    frequency_weight[high_transition] = (11_000 - frequencies[high_transition]) / 4_000
+    frequency_weight[frequencies > 11_000] = 0
+
+    for frame_index in range(frame_count):
+        start = frame_index * hop_size
+        end = start + frame_size
+        background_spectrum = np.fft.rfft(background_padded[:, start:end] * window, axis=1)
+        speech_spectrum = np.fft.rfft(speech_padded[:, start:end] * window, axis=1)
+        mid = 0.5 * (background_spectrum[0] + background_spectrum[1])
+        side = 0.5 * (background_spectrum[0] - background_spectrum[1])
+        speech_magnitude = np.mean(np.abs(speech_spectrum), axis=0)
+        background_magnitude = np.mean(np.abs(background_spectrum), axis=0)
+        speech_ratio = speech_magnitude / (speech_magnitude + background_magnitude + 1e-8)
+        center_ratio = np.abs(mid) / (np.abs(mid) + np.abs(side) + 1e-8)
+        confidence = np.power(np.clip(speech_ratio * 1.8, 0, 1), 0.65) * center_ratio
+        attenuation = np.clip(strength * confidence * frequency_weight, 0, 0.92)
+        filtered_mid = mid * (1 - attenuation)
+        filtered = np.stack([filtered_mid + side, filtered_mid - side])
+        output[:, start:end] += np.fft.irfft(filtered, n=frame_size, axis=1).real.astype(np.float32) * window
+        normalization[start:end] += window * window
+
+    output /= np.maximum(normalization, 1e-8)[None, :]
+    return output[:, padding:padding + sample_count]
+
+
 def load_session(weights: Path):
     from bandit_infer import BanditSession
 
@@ -94,6 +148,7 @@ def main() -> int:
     parser.add_argument("--input", type=Path)
     parser.add_argument("--background", type=Path)
     parser.add_argument("--dialogue-reduction", type=float, default=1.0)
+    parser.add_argument("--residual-suppression", type=float, default=0.0)
     parser.add_argument("--center-cancel", action="store_true")
     parser.add_argument("--center-cancel-strength", type=float, default=1.0)
     args = parser.parse_args()
@@ -111,10 +166,19 @@ def main() -> int:
         audio = cancel_center_bleed(audio, float(np.clip(args.center_cancel_strength, 0.0, 1.0)))
     report("separation", 0.1, "Separating dialogue, music, and effects")
     stems = session.infer(audio, sample_rate=sample_rate)
-    # A value above 1 compensates when the separator underestimates dialogue.
-    # The UI deliberately keeps this conservative to avoid metallic artifacts.
-    reduction = min(max(args.dialogue_reduction, 1.0), 2.0)
+    # Never over-subtract the predicted waveform: doing so creates an audible,
+    # phase-inverted copy wherever the speech estimate is already accurate.
+    reduction = min(max(args.dialogue_reduction, 0.0), 1.0)
     background = audio - reduction * stems["speech"]
+    residual_suppression = float(np.clip(args.residual_suppression, 0.0, 1.0))
+    if residual_suppression > 0:
+        report("cleanup", 0.85, "Suppressing residual centered dialogue")
+        background = suppress_residual_dialogue(
+            background,
+            stems["speech"],
+            sample_rate,
+            residual_suppression,
+        )
     report("output", 0.9, "Writing the clean background")
     write_pcm16(args.background, background, sample_rate)
     report("complete", 1.0, "Clean background is ready")

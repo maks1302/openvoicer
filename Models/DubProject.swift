@@ -125,14 +125,13 @@ enum DialogueCleaningPreset: String, Codable, CaseIterable, Identifiable, Hashab
         }
     }
 
-    func dialogueReduction(isMultichannel: Bool) -> Double {
-        switch (self, isMultichannel) {
-        case (.gentle, true): 1.05
-        case (.balanced, true): 1.2
-        case (.strong, true): 1.35
-        case (.gentle, false): 1.1
-        case (.balanced, false): 1.3
-        case (.strong, false): 1.55
+    var dialogueReduction: Double { 1.0 }
+
+    var residualSuppressionStrength: Double {
+        switch self {
+        case .gentle: 0
+        case .balanced: 0.3
+        case .strong: 0.82
         }
     }
 }

@@ -13,6 +13,7 @@ protocol SourceSeparationService: Sendable {
         inputURL: URL,
         outputURL: URL,
         dialogueReduction: Double,
+        residualSuppression: Double,
         centerCancellationStrength: Double,
         progress: @escaping @Sendable (SourceSeparationProgress) -> Void
     ) async throws
@@ -73,6 +74,7 @@ actor BanditSourceSeparationService: SourceSeparationService {
         inputURL: URL,
         outputURL: URL,
         dialogueReduction: Double,
+        residualSuppression: Double,
         centerCancellationStrength: Double,
         progress: @escaping @Sendable (SourceSeparationProgress) -> Void
     ) async throws {
@@ -85,7 +87,8 @@ actor BanditSourceSeparationService: SourceSeparationService {
             "--weights", weightsDirectory.path,
             "--input", inputURL.path,
             "--background", outputURL.path,
-            "--dialogue-reduction", String(dialogueReduction)
+            "--dialogue-reduction", String(dialogueReduction),
+            "--residual-suppression", String(residualSuppression)
         ]
         if centerCancellationStrength > 0 {
             arguments.append(contentsOf: [
