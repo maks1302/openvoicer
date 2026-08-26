@@ -4,6 +4,14 @@ struct SourceSeparationAsset: Codable, Hashable, Sendable {
     var fileName: String
     var preRollDuration: TimeInterval
     var modelID: String
+    var sourceAudioTrackID: String?
+
+    init(fileName: String, preRollDuration: TimeInterval, modelID: String, sourceAudioTrackID: String? = nil) {
+        self.fileName = fileName
+        self.preRollDuration = preRollDuration
+        self.modelID = modelID
+        self.sourceAudioTrackID = sourceAudioTrackID
+    }
 }
 
 struct DubSegment: Identifiable, Codable, Hashable, Sendable {

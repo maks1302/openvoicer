@@ -3,6 +3,8 @@ import SwiftUI
 struct ProjectView: View {
     @Bindable var controller: ProjectController
     @State private var isShowingInspector = false
+    @State private var isShowingMicrophoneSettings = false
+    @State private var isShowingCleaningSettings = false
 
     var body: some View {
         HSplitView {
@@ -26,17 +28,34 @@ struct ProjectView: View {
 
                 SubtitleImportMenu(controller: controller)
 
+                SourceAudioTrackMenu(controller: controller)
+
+                Button {
+                    isShowingMicrophoneSettings.toggle()
+                } label: {
+                    Label("Microphone Settings", systemImage: "mic")
+                }
+                .help("Microphone Settings")
+                .popover(isPresented: $isShowingMicrophoneSettings, arrowEdge: .bottom) {
+                    MicrophoneSettingsView(controller: controller)
+                }
+
+                Button {
+                    isShowingCleaningSettings.toggle()
+                } label: {
+                    Label("Dialogue Cleaning", systemImage: "waveform.badge.minus")
+                }
+                .help("Dialogue Cleaning")
+                .popover(isPresented: $isShowingCleaningSettings, arrowEdge: .bottom) {
+                    AudioCleaningSettingsView(controller: controller)
+                }
+
                 Button {
                     isShowingInspector.toggle()
                 } label: {
                     Label("Project Info", systemImage: "info.circle")
                 }
 
-                Button {
-                    controller.save()
-                } label: {
-                    Label("Save", systemImage: "square.and.arrow.down")
-                }
             }
         }
         .inspector(isPresented: $isShowingInspector) {
@@ -70,7 +89,17 @@ private struct ProjectInspectorView: View {
                 if !source.metadata.audioTracks.isEmpty {
                     Section("Audio") {
                         ForEach(source.metadata.audioTracks) { track in
-                            LabeledContent(track.title, value: audioDescription(track))
+                            LabeledContent {
+                                Text(audioDescription(track))
+                            } label: {
+                                HStack(spacing: 5) {
+                                    if track.id == controller.selectedAudioTrack?.id {
+                                        Image(systemName: "checkmark")
+                                            .foregroundStyle(.tint)
+                                    }
+                                    Text(track.title)
+                                }
+                            }
                         }
                     }
                 }
@@ -95,6 +124,46 @@ private struct ProjectInspectorView: View {
         ]
         .compactMap { $0 }
         .joined(separator: " · ")
+    }
+}
+
+private struct SourceAudioTrackMenu: View {
+    @Bindable var controller: ProjectController
+
+    var body: some View {
+        Menu {
+            if let tracks = controller.project?.sourceVideo?.metadata.audioTracks {
+                ForEach(tracks) { track in
+                    Button {
+                        controller.updateSelectedAudioTrack(track.id)
+                    } label: {
+                        if track.id == controller.selectedAudioTrack?.id {
+                            Label(trackLabel(track), systemImage: "checkmark")
+                        } else {
+                            Text(trackLabel(track))
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label("Source Audio", systemImage: "speaker.wave.2")
+        }
+        .help("Choose the movie audio track used for playback, waveforms, and dialogue cleaning")
+        .disabled(controller.project?.sourceVideo?.metadata.audioTracks.isEmpty != false)
+    }
+
+    private func trackLabel(_ track: AudioTrackMetadata) -> String {
+        var parts = [track.title]
+        if let language = track.languageCode, !language.isEmpty {
+            parts.append(language.uppercased())
+        }
+        if let channels = track.channelCount {
+            parts.append("\(channels) ch")
+        }
+        if let codec = track.codec, !codec.isEmpty {
+            parts.append(codec.uppercased())
+        }
+        return parts.joined(separator: " · ")
     }
 }
 

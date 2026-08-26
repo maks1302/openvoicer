@@ -7,6 +7,7 @@ actor WaveformService {
 
     func samples(
         from audioURL: URL,
+        audioTrackIndex: Int,
         timeRange: Range<TimeInterval>,
         sampleCount: Int,
         cacheURL: URL
@@ -19,6 +20,7 @@ actor WaveformService {
 
         let samples = try await renderSamples(
             from: audioURL,
+            audioTrackIndex: audioTrackIndex,
             timeRange: timeRange,
             sampleCount: sampleCount
         )
@@ -32,14 +34,17 @@ actor WaveformService {
 
     private func renderSamples(
         from audioURL: URL,
+        audioTrackIndex: Int,
         timeRange: Range<TimeInterval>,
         sampleCount: Int
     ) async throws -> [Float] {
         guard sampleCount > 0, timeRange.upperBound > timeRange.lowerBound else { return [] }
         let asset = AVURLAsset(url: audioURL)
-        guard let track = try await asset.loadTracks(withMediaType: .audio).first else {
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        guard audioTracks.indices.contains(audioTrackIndex) else {
             throw WaveformError.audioTrackMissing
         }
+        let track = audioTracks[audioTrackIndex]
 
         let reader = try AVAssetReader(asset: asset)
         reader.timeRange = CMTimeRange(

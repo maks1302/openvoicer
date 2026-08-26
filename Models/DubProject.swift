@@ -1,7 +1,7 @@
 import Foundation
 
 struct DubProject: Codable, Identifiable, Hashable, Sendable {
-    static let currentSchemaVersion = 4
+    static let currentSchemaVersion = 6
 
     var schemaVersion: Int
     let id: UUID
@@ -63,10 +63,15 @@ struct ProjectSettings: Codable, Hashable, Sendable {
     var selectedInputDeviceID: String?
     var recordingCountdownSeconds = 3
     var recordingGain: Float = 1.0
+    var dialogueCleaningPreset: DialogueCleaningPreset = .balanced
+    var cleanBackgroundVolume: Float = 1.0
+    var selectedAudioTrackID: String?
 
     private enum CodingKeys: String, CodingKey {
         case preRollDuration, postRollDuration, originalVolume, duckedOriginalVolume
         case selectedInputDeviceID, recordingCountdownSeconds, recordingGain
+        case dialogueCleaningPreset, cleanBackgroundVolume
+        case selectedAudioTrackID
     }
 
     init() {}
@@ -80,6 +85,55 @@ struct ProjectSettings: Codable, Hashable, Sendable {
         selectedInputDeviceID = try container.decodeIfPresent(String.self, forKey: .selectedInputDeviceID)
         recordingCountdownSeconds = try container.decodeIfPresent(Int.self, forKey: .recordingCountdownSeconds) ?? 3
         recordingGain = try container.decodeIfPresent(Float.self, forKey: .recordingGain) ?? 1.0
+        dialogueCleaningPreset = try container.decodeIfPresent(
+            DialogueCleaningPreset.self,
+            forKey: .dialogueCleaningPreset
+        ) ?? .balanced
+        cleanBackgroundVolume = try container.decodeIfPresent(Float.self, forKey: .cleanBackgroundVolume) ?? 1.0
+        selectedAudioTrackID = try container.decodeIfPresent(String.self, forKey: .selectedAudioTrackID)
+    }
+}
+
+enum DialogueCleaningPreset: String, Codable, CaseIterable, Identifiable, Hashable, Sendable {
+    case gentle
+    case balanced
+    case strong
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .gentle: "Gentle"
+        case .balanced: "Balanced"
+        case .strong: "Strong"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .gentle: "Preserves more music and effects, with more chance of dialogue leakage."
+        case .balanced: "Reduces dialogue while retaining most of the surrounding mix."
+        case .strong: "Removes the most dialogue, but may soften centered music and effects."
+        }
+    }
+
+    var centerCancellationStrength: Double {
+        switch self {
+        case .gentle: 0.55
+        case .balanced: 0.78
+        case .strong: 1.0
+        }
+    }
+
+    func dialogueReduction(isMultichannel: Bool) -> Double {
+        switch (self, isMultichannel) {
+        case (.gentle, true): 1.05
+        case (.balanced, true): 1.2
+        case (.strong, true): 1.35
+        case (.gentle, false): 1.1
+        case (.balanced, false): 1.3
+        case (.strong, false): 1.55
+        }
     }
 }
 

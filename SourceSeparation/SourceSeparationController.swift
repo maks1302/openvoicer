@@ -30,7 +30,7 @@ final class SourceSeparationController {
         inputURL: URL,
         outputURL: URL,
         dialogueReduction: Double,
-        centerCancellation: Bool,
+        centerCancellationStrength: Double,
         completion: @escaping @MainActor (Result<Void, Error>) -> Void
     ) {
         guard !isBusy else { return }
@@ -55,7 +55,7 @@ final class SourceSeparationController {
                     inputURL: inputURL,
                     outputURL: outputURL,
                     dialogueReduction: dialogueReduction,
-                    centerCancellation: centerCancellation
+                    centerCancellationStrength: centerCancellationStrength
                 ) { [weak self] update in
                     Task { @MainActor in
                         self?.progress = update.fraction

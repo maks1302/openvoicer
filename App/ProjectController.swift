@@ -140,6 +140,12 @@ final class ProjectController {
         return segment.takes.first { $0.id == takeID }
     }
 
+    var selectedAudioTrack: AudioTrackMetadata? {
+        guard let tracks = project?.sourceVideo?.metadata.audioTracks else { return nil }
+        let selectedID = project?.settings.selectedAudioTrackID
+        return tracks.first(where: { $0.id == selectedID }) ?? tracks.first
+    }
+
     func selectSegment(_ id: UUID?) {
         guard !recording.isActive else { return }
         selectedSegmentID = id
@@ -179,6 +185,10 @@ final class ProjectController {
             errorMessage = "Record or select a take before previewing the dubbed voice."
             return
         }
+        if mode == .clean, !hasCleanBackgroundForSelectedTrack(segment) {
+            errorMessage = "Clean this line using the selected source audio track before previewing the clean dub."
+            return
+        }
 
         playback.play(from: segment.startTime, to: segment.endTime) { [weak self] in
             guard let self else { return }
@@ -205,7 +215,7 @@ final class ProjectController {
                         takeGain: take.gain,
                         backgroundURL: backgroundURL,
                         backgroundOffset: asset.preRollDuration,
-                        backgroundGain: project.settings.originalVolume
+                        backgroundGain: project.settings.cleanBackgroundVolume
                     )
                 } else {
                     try recording.playTake(id: take.id, at: url, gain: take.gain)
@@ -219,7 +229,9 @@ final class ProjectController {
     func prepareCleanBackground() {
         guard let segment = selectedSegment,
               let projectURL,
-              let sourceURL = playback.sourceURL else { return }
+              let sourceURL = playback.sourceURL,
+              let selectedAudioTrack,
+              let audioTrackIndex = project?.sourceVideo?.metadata.audioTracks.firstIndex(of: selectedAudioTrack) else { return }
         playback.pause()
         recording.stopTakePlayback()
 
@@ -227,13 +239,15 @@ final class ProjectController {
         let postRoll = min(2, max(0, playback.duration - segment.endTime))
         let extractionStart = segment.startTime - preRoll
         let extractionDuration = segment.duration + preRoll + postRoll
-        let isMultichannel = (project?.sourceVideo?.metadata.audioTracks.first?.channelCount ?? 2) >= 6
-        let dialogueReduction = isMultichannel ? 1.35 : 1.55
+        let isMultichannel = (selectedAudioTrack.channelCount ?? 2) >= 6
+        let cleaningPreset = project?.settings.dialogueCleaningPreset ?? .balanced
+        let dialogueReduction = cleaningPreset.dialogueReduction(isMultichannel: isMultichannel)
+        let centerCancellationStrength = isMultichannel ? cleaningPreset.centerCancellationStrength : 0
         let workingDirectory = FileManager.default.temporaryDirectory
             .appending(path: "DubLab-Separation-\(UUID().uuidString)", directoryHint: .isDirectory)
         let inputURL = workingDirectory.appending(path: "input.wav")
         let outputURL = workingDirectory.appending(path: "background.wav")
-        let relativeName = "\(segment.id.uuidString).wav"
+        let relativeName = "\(segment.id.uuidString)-\(selectedAudioTrack.id).wav"
         let finalURL = projectURL.appending(path: "separation-cache").appending(path: relativeName)
 
         Task { [weak self] in
@@ -244,6 +258,7 @@ final class ProjectController {
                     from: sourceURL,
                     startTime: extractionStart,
                     duration: extractionDuration,
+                    audioTrackIndex: audioTrackIndex,
                     preserveMultichannel: isMultichannel,
                     destination: inputURL
                 )
@@ -251,7 +266,7 @@ final class ProjectController {
                     inputURL: inputURL,
                     outputURL: outputURL,
                     dialogueReduction: dialogueReduction,
-                    centerCancellation: isMultichannel
+                    centerCancellationStrength: centerCancellationStrength
                 ) { [weak self] result in
                     guard let self else { return }
                     defer { try? FileManager.default.removeItem(at: workingDirectory) }
@@ -272,8 +287,9 @@ final class ProjectController {
                                     fileName: relativeName,
                                     preRollDuration: preRoll,
                                     modelID: isMultichannel
-                                        ? "\(BanditSourceSeparationService.modelID)-adaptive-center"
-                                        : "\(BanditSourceSeparationService.modelID)-strong"
+                                        ? "\(BanditSourceSeparationService.modelID)-adaptive-center-\(cleaningPreset.rawValue)"
+                                        : "\(BanditSourceSeparationService.modelID)-\(cleaningPreset.rawValue)",
+                                    sourceAudioTrackID: selectedAudioTrack.id
                                 )
                             }
                             segmentPreviewMode = .clean
@@ -302,6 +318,54 @@ final class ProjectController {
         project.settings.duckedOriginalVolume = min(max(volume, 0), 1)
         self.project = project
         save()
+    }
+
+    func updateDialogueCleaningPreset(_ preset: DialogueCleaningPreset) {
+        guard var project else { return }
+        project.settings.dialogueCleaningPreset = preset
+        self.project = project
+        save()
+    }
+
+    func updateCleanBackgroundVolume(_ volume: Float) {
+        guard var project else { return }
+        project.settings.cleanBackgroundVolume = min(max(volume, 0), 1)
+        self.project = project
+        save()
+    }
+
+    func updateSelectedAudioTrack(_ trackID: String) {
+        guard var project,
+              let tracks = project.sourceVideo?.metadata.audioTracks,
+              let trackIndex = tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        guard project.settings.selectedAudioTrackID != trackID else { return }
+
+        playback.pause()
+        recording.stopTakePlayback()
+        project.settings.selectedAudioTrackID = trackID
+        for index in project.segments.indices {
+            project.segments[index].separatedBackground = nil
+        }
+        self.project = project
+        save()
+        refreshWaveforms()
+
+        Task { [weak self] in
+            do {
+                try await self?.playback.selectAudioTrack(at: trackIndex)
+            } catch {
+                self?.present(error, fallback: "The selected audio track could not be played.")
+            }
+        }
+    }
+
+    func hasCleanBackgroundForSelectedTrack(_ segment: DubSegment) -> Bool {
+        guard let asset = segment.separatedBackground,
+              let selectedAudioTrack,
+              let tracks = project?.sourceVideo?.metadata.audioTracks else { return false }
+        if asset.sourceAudioTrackID == selectedAudioTrack.id { return true }
+        // Caches created before audio-track selection always came from stream zero.
+        return asset.sourceAudioTrackID == nil && tracks.first?.id == selectedAudioTrack.id
     }
 
     func toggleRecording() {
@@ -511,9 +575,13 @@ final class ProjectController {
             )
             project.subtitleSource = nil
             project.segments = []
+            project.settings.selectedAudioTrackID = metadata.audioTracks.first?.id
             project.modifiedAt = Date()
             self.project = project
             playback.load(url: playbackSource.url, duration: metadata.duration)
+            if !metadata.audioTracks.isEmpty {
+                try await playback.selectAudioTrack(at: 0)
+            }
             selectSegment(nil)
             save()
             await refreshEmbeddedSubtitleTracks(sourceURL: url)
@@ -738,6 +806,10 @@ final class ProjectController {
         let take = selectedTake
         waveforms.load(
             originalURL: playback.sourceURL,
+            audioTrackIndex: selectedAudioTrack.flatMap { track in
+                project?.sourceVideo?.metadata.audioTracks.firstIndex(of: track)
+            } ?? 0,
+            audioTrackID: selectedAudioTrack?.id,
             segment: segment,
             takeURL: take.flatMap(recordingURL(for:)),
             take: take,
@@ -785,6 +857,15 @@ final class ProjectController {
             }
         }
         playback.load(url: playbackURL, duration: source.metadata.duration)
+        let tracks = source.metadata.audioTracks
+        if !tracks.isEmpty {
+            let selectedID = project.settings.selectedAudioTrackID
+            let selectedIndex = tracks.firstIndex { $0.id == selectedID } ?? 0
+            project.settings.selectedAudioTrackID = tracks[selectedIndex].id
+            self.project = project
+            try await playback.selectAudioTrack(at: selectedIndex)
+            save()
+        }
 
         if resolved.isStale {
             project.sourceVideo?.bookmarkData = try SecurityScopedBookmarks.makeBookmark(for: resolved.url)

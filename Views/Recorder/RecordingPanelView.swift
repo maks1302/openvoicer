@@ -15,8 +15,8 @@ struct RecordingPanelView: View {
                 previewControls(segment)
 
                 HStack(spacing: 14) {
-                    microphonePicker
-                    inputMeter
+                    InputLevelMeter(controller: controller)
+                        .frame(width: 105)
 
                     Spacer()
 
@@ -35,9 +35,6 @@ struct RecordingPanelView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
             .background(.bar)
-            .onAppear {
-                controller.recording.devices.refresh()
-            }
         }
     }
 
@@ -80,30 +77,30 @@ struct RecordingPanelView: View {
 
     private func previewControls(_ segment: DubSegment) -> some View {
         HStack(spacing: 10) {
-            Text("PREVIEW")
+            Text("LISTEN")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            Picker("Preview", selection: $controller.segmentPreviewMode) {
+            Picker("Listen", selection: $controller.segmentPreviewMode) {
                 Text("Original").tag(ProjectController.SegmentPreviewMode.original)
-                Text("Voice").tag(ProjectController.SegmentPreviewMode.voice)
-                Text("Mixed").tag(ProjectController.SegmentPreviewMode.mixed)
-                Text("Clean").tag(ProjectController.SegmentPreviewMode.clean)
+                Text("Take Only").tag(ProjectController.SegmentPreviewMode.voice)
+                Text("Quick Mix").tag(ProjectController.SegmentPreviewMode.mixed)
+                Text("Clean Dub").tag(ProjectController.SegmentPreviewMode.clean)
             }
             .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(width: 290)
+            .pickerStyle(.menu)
+            .frame(width: 125)
 
             Button {
                 controller.previewSelectedSegment()
             } label: {
-                Label("Preview", systemImage: "play.fill")
+                Label("Listen", systemImage: "play.fill")
             }
             .disabled(
                 controller.recording.isActive
                     || controller.sourceSeparation.isBusy
                     || (controller.segmentPreviewMode != .original && segment.selectedTakeID == nil)
-                    || (controller.segmentPreviewMode == .clean && segment.separatedBackground == nil)
+                    || (controller.segmentPreviewMode == .clean && !controller.hasCleanBackgroundForSelectedTrack(segment))
             )
 
             if controller.segmentPreviewMode == .mixed {
@@ -140,7 +137,7 @@ struct RecordingPanelView: View {
                 controller.cancelSourceSeparation()
             }
             .controlSize(.small)
-        } else if segment.separatedBackground != nil {
+        } else if controller.hasCleanBackgroundForSelectedTrack(segment) {
             Label("Dialogue removed", systemImage: "checkmark.circle.fill")
                 .font(.caption)
                 .foregroundStyle(.green)
@@ -215,47 +212,6 @@ struct RecordingPanelView: View {
         .disabled(controller.recording.isActive)
     }
 
-    private var microphonePicker: some View {
-        HStack(spacing: 8) {
-            Picker("Microphone", selection: selectedDevice) {
-                Text("System Default").tag(nil as String?)
-                ForEach(controller.recording.devices.devices) { device in
-                    Text(device.name).tag(Optional(device.id))
-                }
-            }
-            .labelsHidden()
-            .frame(maxWidth: 210)
-            .disabled(controller.recording.isActive)
-
-            Picker("Countdown", selection: countdownSeconds) {
-                Text("No Countdown").tag(0)
-                Text("1 second").tag(1)
-                Text("2 seconds").tag(2)
-                Text("3 seconds").tag(3)
-            }
-            .labelsHidden()
-            .frame(width: 115)
-            .disabled(controller.recording.isActive)
-        }
-    }
-
-    private var inputMeter: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "mic.fill")
-                .foregroundStyle(controller.recording.isClipping ? .red : .secondary)
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.secondary.opacity(0.18))
-                    Capsule()
-                        .fill(controller.recording.isClipping ? Color.red : Color.green)
-                        .frame(width: geometry.size.width * CGFloat(controller.recording.inputLevel))
-                }
-            }
-            .frame(width: 72, height: 6)
-        }
-        .help(controller.recording.isClipping ? "Input is clipping" : "Microphone input level")
-    }
-
     @ViewBuilder
     private var recordButton: some View {
         switch controller.recording.state {
@@ -294,20 +250,6 @@ struct RecordingPanelView: View {
                 .controlSize(.small)
                 .frame(minWidth: 82)
         }
-    }
-
-    private var selectedDevice: Binding<String?> {
-        Binding(
-            get: { controller.project?.settings.selectedInputDeviceID },
-            set: { controller.updateSelectedInputDevice($0) }
-        )
-    }
-
-    private var countdownSeconds: Binding<Int> {
-        Binding(
-            get: { controller.project?.settings.recordingCountdownSeconds ?? 3 },
-            set: { controller.updateRecordingCountdown($0) }
-        )
     }
 
     private var duckingVolume: Binding<Float> {

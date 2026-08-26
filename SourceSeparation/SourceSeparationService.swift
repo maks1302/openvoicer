@@ -13,7 +13,7 @@ protocol SourceSeparationService: Sendable {
         inputURL: URL,
         outputURL: URL,
         dialogueReduction: Double,
-        centerCancellation: Bool,
+        centerCancellationStrength: Double,
         progress: @escaping @Sendable (SourceSeparationProgress) -> Void
     ) async throws
     func cancel() async
@@ -73,7 +73,7 @@ actor BanditSourceSeparationService: SourceSeparationService {
         inputURL: URL,
         outputURL: URL,
         dialogueReduction: Double,
-        centerCancellation: Bool,
+        centerCancellationStrength: Double,
         progress: @escaping @Sendable (SourceSeparationProgress) -> Void
     ) async throws {
         guard isRuntimeReady() else { throw SourceSeparationError.runtimeUnavailable }
@@ -87,8 +87,11 @@ actor BanditSourceSeparationService: SourceSeparationService {
             "--background", outputURL.path,
             "--dialogue-reduction", String(dialogueReduction)
         ]
-        if centerCancellation {
-            arguments.append("--center-cancel")
+        if centerCancellationStrength > 0 {
+            arguments.append(contentsOf: [
+                "--center-cancel",
+                "--center-cancel-strength", String(centerCancellationStrength)
+            ])
         }
         try await runHelper(arguments: arguments, progress: progress)
         guard FileManager.default.fileExists(atPath: outputURL.path) else {

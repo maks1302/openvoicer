@@ -124,6 +124,7 @@ actor FFmpegService {
         from source: URL,
         startTime: TimeInterval,
         duration: TimeInterval,
+        audioTrackIndex: Int,
         preserveMultichannel: Bool = false,
         destination: URL
     ) async throws {
@@ -140,7 +141,7 @@ actor FFmpegService {
             "-ss", startTime.formatted(.number.locale(Locale(identifier: "en_US_POSIX")).precision(.fractionLength(3))),
             "-i", "pipe:0",
             "-t", duration.formatted(.number.locale(Locale(identifier: "en_US_POSIX")).precision(.fractionLength(3))),
-            "-map", "0:a:0",
+            "-map", "0:a:\(audioTrackIndex)",
             "-vn", "-sn",
         ]
         if !preserveMultichannel {

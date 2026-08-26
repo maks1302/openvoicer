@@ -38,7 +38,7 @@ def write_pcm16(path: Path, audio: np.ndarray, sample_rate: int) -> None:
         destination.writeframes(samples)
 
 
-def cancel_center_bleed(audio: np.ndarray) -> np.ndarray:
+def cancel_center_bleed(audio: np.ndarray, strength: float) -> np.ndarray:
     """Create stereo background while cancelling center duplicated into surrounds."""
     if audio.shape[0] < 6:
         return audio
@@ -48,7 +48,7 @@ def cancel_center_bleed(audio: np.ndarray) -> np.ndarray:
 
     def residual(channel: int, maximum: float) -> np.ndarray:
         coefficient = float(np.clip(np.dot(audio[channel], center) / denominator, 0.0, maximum))
-        return audio[channel] - coefficient * center
+        return audio[channel] - coefficient * center * strength
 
     front_left = residual(0, 0.8)
     front_right = residual(1, 0.8)
@@ -95,6 +95,7 @@ def main() -> int:
     parser.add_argument("--background", type=Path)
     parser.add_argument("--dialogue-reduction", type=float, default=1.0)
     parser.add_argument("--center-cancel", action="store_true")
+    parser.add_argument("--center-cancel-strength", type=float, default=1.0)
     args = parser.parse_args()
 
     session = load_session(args.weights)
@@ -107,7 +108,7 @@ def main() -> int:
     audio, sample_rate = read_pcm16(args.input)
     if args.center_cancel:
         report("channels", 0.05, "Cancelling duplicated center-channel dialogue")
-        audio = cancel_center_bleed(audio)
+        audio = cancel_center_bleed(audio, float(np.clip(args.center_cancel_strength, 0.0, 1.0)))
     report("separation", 0.1, "Separating dialogue, music, and effects")
     stems = session.infer(audio, sample_rate=sample_rate)
     # A value above 1 compensates when the separator underestimates dialogue.

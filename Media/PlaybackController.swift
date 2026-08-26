@@ -57,6 +57,13 @@ final class PlaybackController {
         isPlaying = false
     }
 
+    func selectAudioTrack(at index: Int) async throws {
+        guard let item = player.currentItem,
+              let group = try await item.asset.loadMediaSelectionGroup(for: .audible),
+              group.options.indices.contains(index) else { return }
+        item.select(group.options[index], in: group)
+    }
+
     func clear() {
         cancelBoundedPlayback()
         player.pause()

@@ -13,6 +13,8 @@ final class WaveformController {
 
     func load(
         originalURL: URL?,
+        audioTrackIndex: Int,
+        audioTrackID: String?,
         segment: DubSegment?,
         takeURL: URL?,
         take: RecordingTake?,
@@ -34,6 +36,8 @@ final class WaveformController {
             do {
                 async let original: [Float] = loadOriginal(
                     url: originalURL,
+                    audioTrackIndex: audioTrackIndex,
+                    audioTrackID: audioTrackID,
                     segment: segment,
                     cacheRoot: cacheRoot
                 )
@@ -55,13 +59,22 @@ final class WaveformController {
         }
     }
 
-    private func loadOriginal(url: URL?, segment: DubSegment, cacheRoot: URL) async throws -> [Float] {
+    private func loadOriginal(
+        url: URL?,
+        audioTrackIndex: Int,
+        audioTrackID: String?,
+        segment: DubSegment,
+        cacheRoot: URL
+    ) async throws -> [Float] {
         guard let url else { return [] }
         return try await service.samples(
             from: url,
+            audioTrackIndex: audioTrackIndex,
             timeRange: segment.startTime..<segment.endTime,
             sampleCount: 240,
-            cacheURL: cacheRoot.appending(path: "original/\(segment.id.uuidString)-240.json")
+            cacheURL: cacheRoot.appending(
+                path: "original/\(audioTrackID ?? "default")-\(segment.id.uuidString)-240.json"
+            )
         )
     }
 
@@ -69,6 +82,7 @@ final class WaveformController {
         guard let url, let take else { return [] }
         return try await service.samples(
             from: url,
+            audioTrackIndex: 0,
             timeRange: 0..<max(take.duration, 0.01),
             sampleCount: 240,
             cacheURL: cacheRoot.appending(path: "takes/\(take.id.uuidString)-240.json")
