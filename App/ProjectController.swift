@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 @MainActor
 @Observable
 final class ProjectController {
+    private static let playbackPreparationVersion = 2
     enum SegmentPreviewMode: String, CaseIterable, Identifiable {
         case original
         case voice
@@ -580,7 +581,10 @@ final class ProjectController {
                 bookmarkData: bookmark,
                 lastKnownPath: url.path,
                 metadata: metadata,
-                playbackFileName: playbackSource.relativeFileName
+                playbackFileName: playbackSource.relativeFileName,
+                playbackPreparationVersion: playbackSource.relativeFileName == nil
+                    ? nil
+                    : Self.playbackPreparationVersion
             )
             project.subtitleSource = nil
             project.segments = []
@@ -845,7 +849,8 @@ final class ProjectController {
             accessedVideoURL = resolved.url
         }
         let playbackURL: URL
-        if let playbackFileName = source.playbackFileName {
+        if let playbackFileName = source.playbackFileName,
+           source.playbackPreparationVersion == Self.playbackPreparationVersion {
             let cachedURL = projectURL.appending(path: playbackFileName)
             if FileManager.default.fileExists(atPath: cachedURL.path) {
                 playbackURL = cachedURL
@@ -853,6 +858,9 @@ final class ProjectController {
                 let prepared = try await preparePlaybackSource(for: resolved.url, in: projectURL)
                 playbackURL = prepared.url
                 project.sourceVideo?.playbackFileName = prepared.relativeFileName
+                project.sourceVideo?.playbackPreparationVersion = prepared.relativeFileName == nil
+                    ? nil
+                    : Self.playbackPreparationVersion
                 self.project = project
                 save()
             }
@@ -861,6 +869,7 @@ final class ProjectController {
             playbackURL = prepared.url
             if let relativeFileName = prepared.relativeFileName {
                 project.sourceVideo?.playbackFileName = relativeFileName
+                project.sourceVideo?.playbackPreparationVersion = Self.playbackPreparationVersion
                 self.project = project
                 save()
             }

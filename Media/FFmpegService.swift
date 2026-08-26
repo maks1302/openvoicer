@@ -10,7 +10,8 @@ actor FFmpegService {
         }
 
         let logURL = destination.deletingLastPathComponent().appending(path: "ffmpeg-remux.log")
-        let arguments = [
+        let videoCodec = try await primaryVideoCodec(in: source)
+        var arguments = [
             "-hide_banner",
             "-nostdin",
             "-y",
@@ -18,8 +19,16 @@ actor FFmpegService {
             "-map", "0:v:0",
             "-map", "0:a?",
             "-map_metadata", "0",
-            "-c", "copy",
+            "-c:v", "copy",
+            "-c:a", "copy",
             "-sn",
+        ]
+        if videoCodec == "hevc" {
+            // AVFoundation may reject HEVC carried as hev1 even though the
+            // underlying Main/Main10 bitstream is hardware-decodable.
+            arguments += ["-tag:v:0", "hvc1"]
+        }
+        arguments += [
             "-f", "mov",
             "-movflags", "+frag_keyframe+empty_moov+default_base_moof+delay_moov",
             "pipe:1"
@@ -40,6 +49,37 @@ actor FFmpegService {
             logger.error("FFmpeg remux failed with exit code \(result.exitCode)")
             throw FFmpegError.processFailed(details: result.errorSummary)
         }
+    }
+
+    private func primaryVideoCodec(in source: URL) async throws -> String? {
+        guard let executableURL = Self.findExecutable(named: "ffprobe") else {
+            throw FFmpegError.notInstalled
+        }
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "DubLab-Probe-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let outputURL = temporaryDirectory.appending(path: "video-codec.json")
+        let logURL = temporaryDirectory.appending(path: "ffprobe.log")
+        let arguments = [
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name",
+            "-of", "json",
+            "-i", "pipe:0"
+        ]
+        let result = try await Task.detached(priority: .utility) {
+            try MediaProcess.run(
+                executableURL: executableURL,
+                arguments: arguments,
+                inputURL: source,
+                outputURL: outputURL,
+                logURL: logURL
+            )
+        }.value
+        guard result.exitCode == 0 else { throw FFmpegError.probeFailed }
+        let data = try Data(contentsOf: outputURL)
+        return try JSONDecoder().decode(FFprobeVideoOutput.self, from: data).streams.first?.codecName
     }
 
     func embeddedSubtitleTracks(in source: URL) async throws -> [EmbeddedSubtitleTrack] {
@@ -272,5 +312,17 @@ private struct FFprobeSubtitleOutput: Decodable {
     struct Tags: Decodable {
         let language: String?
         let title: String?
+    }
+}
+
+private struct FFprobeVideoOutput: Decodable {
+    let streams: [Stream]
+
+    struct Stream: Decodable {
+        let codecName: String
+
+        enum CodingKeys: String, CodingKey {
+            case codecName = "codec_name"
+        }
     }
 }

@@ -1,7 +1,7 @@
 import Foundation
 
 struct DubProject: Codable, Identifiable, Hashable, Sendable {
-    static let currentSchemaVersion = 6
+    static let currentSchemaVersion = 7
 
     var schemaVersion: Int
     let id: UUID
@@ -53,6 +53,7 @@ struct SourceVideoReference: Codable, Hashable, Sendable {
     var lastKnownPath: String
     var metadata: VideoMetadata
     var playbackFileName: String?
+    var playbackPreparationVersion: Int?
 }
 
 struct ProjectSettings: Codable, Hashable, Sendable {
