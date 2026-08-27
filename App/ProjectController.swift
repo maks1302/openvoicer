@@ -30,6 +30,7 @@ final class ProjectController {
     let recording = RecordingController()
     let waveforms = WaveformController()
     let sourceSeparation = SourceSeparationController()
+    let recentProjects = RecentProjectsStore()
 
     private let projectStore = ProjectStore()
     private let metadataLoader = VideoMetadataLoader()
@@ -83,6 +84,15 @@ final class ProjectController {
 
     func openProjectURL(_ url: URL) {
         guard url.pathExtension.lowercased() == "dublab" else { return }
+        Task { await openProject(at: url) }
+    }
+
+    func openRecentProject(_ recentProject: RecentProject) {
+        let url = recentProjects.resolveURL(for: recentProject)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            errorMessage = "This project has moved or is no longer available."
+            return
+        }
         Task { await openProject(at: url) }
     }
 
@@ -496,6 +506,7 @@ final class ProjectController {
         guard var project, let projectURL else { return }
         project.modifiedAt = Date()
         self.project = project
+        recentProjects.updateMetadata(for: project, at: projectURL)
 
         Task {
             do {
@@ -542,6 +553,7 @@ final class ProjectController {
             selectedSegmentID = nil
             refreshWaveforms()
             embeddedSubtitleTracks = []
+            recentProjects.recordOpened(project: newProject, at: url)
             return true
         } catch {
             present(error, fallback: "The project could not be created.")
@@ -567,6 +579,7 @@ final class ProjectController {
             if let firstSegment = project?.segments.first {
                 selectSegment(firstSegment.id)
             }
+            recentProjects.recordOpened(project: loadedProject, at: url)
             logger.info("Opened project \(loadedProject.name, privacy: .public)")
         } catch {
             if didStartAccess { url.stopAccessingSecurityScopedResource() }
