@@ -70,14 +70,11 @@ struct DubLabApp: App {
                     projectController.selectedSegment?.takes.isEmpty != false
                 )
 
-                Button("Accept Take and Next") {
-                    projectController.acceptSelectedTakeAndAdvance()
+                Button("Accept Previewed Result and Next") {
+                    projectController.acceptSelectedVersionAndAdvance()
                 }
                 .keyboardShortcut(.return, modifiers: [])
-                .disabled(
-                    projectController.recording.isActive ||
-                    projectController.selectedSegment?.selectedTakeID == nil
-                )
+                .disabled(!projectController.canAcceptSelectedVersion)
 
                 Divider()
 

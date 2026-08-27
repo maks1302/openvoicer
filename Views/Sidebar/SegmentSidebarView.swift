@@ -140,6 +140,11 @@ private struct SegmentRow: View {
                         .font(.caption.monospacedDigit().weight(.semibold))
                         .foregroundStyle(.secondary)
                     Spacer()
+                    if let treatment = segment.acceptedVersion?.treatment {
+                        Text(treatment.shortTitle)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.green)
+                    }
                     Text(TimeFormatter.playbackTime(segment.duration))
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.tertiary)

@@ -8,14 +8,6 @@ import UniformTypeIdentifiers
 @Observable
 final class ProjectController {
     private static let playbackPreparationVersion = 2
-    enum SegmentPreviewMode: String, CaseIterable, Identifiable {
-        case original
-        case voice
-        case mixed
-        case clean
-
-        var id: Self { self }
-    }
 
     private(set) var project: DubProject?
     private(set) var projectURL: URL?
@@ -23,7 +15,7 @@ final class ProjectController {
     private(set) var isLoadingSubtitles = false
     private(set) var embeddedSubtitleTracks: [EmbeddedSubtitleTrack] = []
     private(set) var selectedSegmentID: UUID?
-    var segmentPreviewMode: SegmentPreviewMode = .mixed
+    var segmentPreviewMode: SegmentMixTreatment = .duckedMix
     var errorMessage: String?
 
     let playback = PlaybackController()
@@ -118,10 +110,7 @@ final class ProjectController {
 
         do {
             let scope = try makeExportScope(project: project)
-            let lines = makeExportLineAssets(project: project, projectURL: projectURL, scope: scope)
-            if case .reviewReel = scope, lines.isEmpty {
-                throw ExportError.noAcceptedLines
-            }
+            let lines = try makeExportLineAssets(project: project, projectURL: projectURL, scope: scope)
 
             let panel = NSSavePanel()
             panel.title = "Export Dubbed Video"
@@ -206,6 +195,9 @@ final class ProjectController {
         selectedSegmentID = id
         refreshWaveforms()
         guard let segment = selectedSegment else { return }
+        if let acceptedVersion = effectiveAcceptedVersion(for: segment) {
+            segmentPreviewMode = acceptedVersion.treatment
+        }
         playback.pause()
         playback.seek(to: segment.startTime)
     }
@@ -236,7 +228,7 @@ final class ProjectController {
         playback.seek(to: segment.startTime + segment.duration * clamped)
     }
 
-    func previewSelectedSegment(mode: SegmentPreviewMode? = nil) {
+    func previewSelectedSegment(mode: SegmentMixTreatment? = nil) {
         guard let segment = selectedSegment, let project else { return }
         let mode = mode ?? segmentPreviewMode
         segmentPreviewMode = mode
@@ -246,7 +238,7 @@ final class ProjectController {
             errorMessage = "Record or select a take before previewing the dubbed voice."
             return
         }
-        if mode == .clean, !hasCleanBackgroundForSelectedTrack(segment) {
+        if mode == .cleanDub, !hasCleanBackgroundForSelectedTrack(segment) {
             errorMessage = "Clean this line using the selected source audio track before previewing the clean dub."
             return
         }
@@ -256,18 +248,18 @@ final class ProjectController {
             switch mode {
             case .original:
                 playback.player.volume = project.settings.originalVolume
-            case .voice:
+            case .takeOnly:
                 playback.player.volume = 0
-            case .mixed:
+            case .duckedMix:
                 playback.player.volume = project.settings.duckedOriginalVolume
-            case .clean:
+            case .cleanDub:
                 playback.player.volume = 0
             }
 
             guard mode != .original, let take = selectedTake,
                   let url = recordingURL(for: take) else { return }
             do {
-                if mode == .clean,
+                if mode == .cleanDub,
                    let asset = segment.separatedBackground,
                    let backgroundURL = separatedBackgroundURL(for: asset) {
                     try recording.playSeparatedPreview(
@@ -360,7 +352,7 @@ final class ProjectController {
                                     sourceAudioTrackID: selectedAudioTrack.id
                                 )
                             }
-                            segmentPreviewMode = .clean
+                            segmentPreviewMode = .cleanDub
                         } catch {
                             present(error, fallback: "The clean background could not be saved in the project.")
                         }
@@ -413,6 +405,10 @@ final class ProjectController {
         project.settings.selectedAudioTrackID = trackID
         for index in project.segments.indices {
             project.segments[index].separatedBackground = nil
+            if project.segments[index].acceptedVersion?.treatment == .cleanDub {
+                project.segments[index].acceptedVersion = nil
+                project.segments[index].status = project.segments[index].takes.isEmpty ? .pending : .recorded
+            }
         }
         self.project = project
         save()
@@ -481,18 +477,47 @@ final class ProjectController {
         updateSelectedSegment { segment in
             guard segment.takes.contains(where: { $0.id == takeID }) else { return }
             segment.selectedTakeID = takeID
+            segment.acceptedVersion = nil
             segment.status = .recorded
         }
         refreshWaveforms()
     }
 
-    func acceptSelectedTakeAndAdvance() {
-        guard let takeID = selectedSegment?.selectedTakeID else { return }
+    var canAcceptSelectedVersion: Bool {
+        guard let segment = selectedSegment,
+              !recording.isActive,
+              !sourceSeparation.isBusy else { return false }
+        if segmentPreviewMode.requiresTake, segment.selectedTakeID == nil { return false }
+        if segmentPreviewMode == .cleanDub {
+            return hasCleanBackgroundForSelectedTrack(segment)
+        }
+        return true
+    }
+
+    func effectiveAcceptedVersion(for segment: DubSegment) -> AcceptedSegmentVersion? {
+        guard segment.status == .accepted else { return nil }
+        if let acceptedVersion = segment.acceptedVersion {
+            return acceptedVersion
+        }
+        guard let takeID = segment.selectedTakeID else { return nil }
+        return AcceptedSegmentVersion(
+            takeID: takeID,
+            treatment: hasCleanBackgroundForSelectedTrack(segment) ? .cleanDub : .duckedMix
+        )
+    }
+
+    func acceptSelectedVersionAndAdvance() {
+        guard canAcceptSelectedVersion else { return }
+        let treatment = segmentPreviewMode
+        let takeID = treatment.requiresTake ? selectedSegment?.selectedTakeID : nil
         updateSelectedSegment { segment in
-            segment.selectedTakeID = takeID
+            segment.acceptedVersion = AcceptedSegmentVersion(
+                takeID: takeID,
+                treatment: treatment
+            )
             segment.status = .accepted
             for index in segment.takes.indices {
-                segment.takes[index].isFavorite = segment.takes[index].id == takeID
+                segment.takes[index].isFavorite = takeID != nil && segment.takes[index].id == takeID
             }
         }
         selectNextSegment()
@@ -520,6 +545,7 @@ final class ProjectController {
             updateSelectedSegment { segment in
                 segment.takes.removeAll { $0.id == takeID }
                 segment.selectedTakeID = segment.takes.last?.id
+                segment.acceptedVersion = nil
                 segment.status = segment.takes.isEmpty ? .pending : .recorded
             }
             refreshWaveforms()
@@ -600,7 +626,7 @@ final class ProjectController {
             switch exportController.reviewLineMode {
             case .accepted:
                 candidates = project.segments.filter {
-                    $0.status == .accepted && $0.selectedTakeID != nil
+                    $0.status == .accepted && effectiveAcceptedVersion(for: $0) != nil
                 }
             case .selected:
                 guard !exportController.selectedLineIDs.isEmpty else {
@@ -609,7 +635,7 @@ final class ProjectController {
                 candidates = project.segments.filter {
                     exportController.selectedLineIDs.contains($0.id)
                         && $0.status == .accepted
-                        && $0.selectedTakeID != nil
+                        && effectiveAcceptedVersion(for: $0) != nil
                 }
             }
             guard !candidates.isEmpty else { throw ExportError.noAcceptedLines }
@@ -649,7 +675,7 @@ final class ProjectController {
         project: DubProject,
         projectURL: URL,
         scope: ExportRenderScope
-    ) -> [ExportLineAsset] {
+    ) throws -> [ExportLineAsset] {
         let ranges: [ExportTimeRange]
         switch scope {
         case .finishedMovie:
@@ -660,23 +686,39 @@ final class ProjectController {
             ranges = reelRanges
         }
 
-        return project.segments.compactMap { segment in
+        return try project.segments.compactMap { segment in
             guard segment.status == .accepted,
                   ranges.contains(where: { segment.endTime > $0.start && segment.startTime < $0.end }),
-                  let selectedTakeID = segment.selectedTakeID,
-                  let take = segment.takes.first(where: { $0.id == selectedTakeID }) else { return nil }
+                  let acceptedVersion = effectiveAcceptedVersion(for: segment) else { return nil }
+
+            if acceptedVersion.treatment == .original { return nil }
+
+            guard let acceptedTakeID = acceptedVersion.takeID,
+                  let take = segment.takes.first(where: { $0.id == acceptedTakeID }) else { return nil }
 
             let takeURL = projectURL.appending(path: "recordings").appending(path: take.fileName)
             guard FileManager.default.fileExists(atPath: takeURL.path) else { return nil }
 
             var backgroundURL: URL?
             var backgroundPreRoll: TimeInterval = 0
-            if hasCleanBackgroundForSelectedTrack(segment), let background = segment.separatedBackground {
+            if acceptedVersion.treatment == .cleanDub,
+               hasCleanBackgroundForSelectedTrack(segment),
+               let background = segment.separatedBackground {
                 let candidate = projectURL.appending(path: "separation-cache").appending(path: background.fileName)
                 if FileManager.default.fileExists(atPath: candidate.path) {
                     backgroundURL = candidate
                     backgroundPreRoll = background.preRollDuration
                 }
+            }
+            if acceptedVersion.treatment == .cleanDub, backgroundURL == nil {
+                throw ExportError.cleanBackgroundUnavailable
+            }
+
+            let exportTreatment: ExportMixTreatment = switch acceptedVersion.treatment {
+            case .duckedMix: .duckedMix
+            case .cleanDub: .cleanDub
+            case .takeOnly: .takeOnly
+            case .original: preconditionFailure("Original lines do not require an export asset")
             }
 
             return ExportLineAsset(
@@ -688,7 +730,8 @@ final class ProjectController {
                 takeGain: take.gain,
                 backgroundURL: backgroundURL,
                 backgroundPreRoll: backgroundPreRoll,
-                backgroundGain: project.settings.cleanBackgroundVolume
+                backgroundGain: project.settings.cleanBackgroundVolume,
+                treatment: exportTreatment
             )
         }
     }
@@ -1003,6 +1046,7 @@ final class ProjectController {
         )
         project.segments[segmentIndex].takes.append(take)
         project.segments[segmentIndex].selectedTakeID = take.id
+        project.segments[segmentIndex].acceptedVersion = nil
         project.segments[segmentIndex].status = .recorded
         project.modifiedAt = Date()
         self.project = project

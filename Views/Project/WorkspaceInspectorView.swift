@@ -53,30 +53,69 @@ private struct DubbingInspectorView: View {
                     Text(segment.text)
                         .font(.callout.weight(.medium))
                         .lineLimit(4)
-                    LabeledContent(
-                        "Timing",
-                        value: "\(TimeFormatter.playbackTime(segment.startTime)) – \(TimeFormatter.playbackTime(segment.endTime))"
-                    )
+                    HStack {
+                        Text("\(TimeFormatter.playbackTime(segment.startTime)) – \(TimeFormatter.playbackTime(segment.endTime))")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if let accepted = controller.effectiveAcceptedVersion(for: segment) {
+                            Label(acceptedLabel(accepted, in: segment), systemImage: "checkmark.circle.fill")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.green)
+                        }
+                    }
                 }
 
-                Section("Preview") {
-                    Picker("Listen to", selection: $controller.segmentPreviewMode) {
-                        Text("Original").tag(ProjectController.SegmentPreviewMode.original)
-                        Text("Take Only").tag(ProjectController.SegmentPreviewMode.voice)
-                        Text("Quick Mix").tag(ProjectController.SegmentPreviewMode.mixed)
-                        Text("Clean Dub").tag(ProjectController.SegmentPreviewMode.clean)
+                Section("Record") {
+                    RecordingActionButton(controller: controller)
+                        .frame(maxWidth: .infinity)
+                }
+
+                Section("Choose Take") {
+                    if segment.takes.isEmpty {
+                        Text("Record a take, or choose Original below to keep this line unchanged.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Picker("Selected take", selection: selectedTakeID) {
+                            ForEach(Array(segment.takes.enumerated()), id: \.element.id) { index, take in
+                                Text("Take \(index + 1) · \(TimeFormatter.playbackTime(take.duration))")
+                                    .tag(Optional(take.id))
+                            }
+                        }
+
+                        ForEach(Array(segment.takes.enumerated()), id: \.element.id) { index, take in
+                            takeRow(take, number: index + 1, selectedID: segment.selectedTakeID)
+                        }
                     }
+                }
+                .disabled(controller.recording.isActive)
+
+                Section("Audition Result") {
+                    Picker("Result", selection: $controller.segmentPreviewMode) {
+                        ForEach(SegmentMixTreatment.allCases) { treatment in
+                            Text(treatment.shortTitle).tag(treatment)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .help("Choose exactly what this line should sound like in the export")
+
+                    Label(resultDescription, systemImage: controller.segmentPreviewMode.systemImage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
                     Button {
                         controller.previewSelectedSegment()
                     } label: {
-                        Label("Listen", systemImage: "play.fill")
-                            .frame(maxWidth: .infinity)
+                        Label("Preview \(controller.segmentPreviewMode.title)", systemImage: "play.fill")
+                            .frame(maxWidth: .infinity, minHeight: 24)
                     }
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
                     .disabled(!canPreview(segment))
 
-                    if controller.segmentPreviewMode == .mixed {
+                    if controller.segmentPreviewMode == .duckedMix {
                         VStack(alignment: .leading, spacing: 6) {
                             HStack {
                                 Text("Original audio")
@@ -87,40 +126,42 @@ private struct DubbingInspectorView: View {
                             }
                             Slider(value: duckedVolume, in: 0...1)
                         }
-                    } else if controller.segmentPreviewMode == .clean,
+                    } else if controller.segmentPreviewMode == .cleanDub,
                               !controller.hasCleanBackgroundForSelectedTrack(segment) {
-                        Label("Prepare this line in the Audio inspector first.", systemImage: "waveform.badge.exclamationmark")
+                        Label("Remove the original voice before this result can be previewed.", systemImage: "waveform.badge.exclamationmark")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
 
-                Section("Recording") {
-                    RecordingActionButton(controller: controller)
-                        .frame(maxWidth: .infinity)
-
-                    if !segment.takes.isEmpty {
-                        AcceptTakeButton(controller: controller)
-                            .frame(maxWidth: .infinity)
+                Section {
+                    Button {
+                        controller.acceptSelectedVersionAndAdvance()
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.title3)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(acceptButtonTitle(segment))
+                                    .fontWeight(.semibold)
+                                Text("Save this result and open the next line")
+                                    .font(.caption)
+                                    .opacity(0.8)
+                            }
+                            Spacer()
+                            Image(systemName: "arrow.right")
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 34)
                     }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .tint(.green)
+                    .disabled(!controller.canAcceptSelectedVersion)
                 }
 
                 Section("Original Voice") {
                     voiceRemovalControl(segment)
                 }
-
-                Section("Takes") {
-                    if segment.takes.isEmpty {
-                        Text("Your recordings for this line will appear here.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(Array(segment.takes.enumerated()), id: \.element.id) { index, take in
-                            takeRow(take, number: index + 1, selectedID: segment.selectedTakeID)
-                        }
-                    }
-                }
-                .disabled(controller.recording.isActive)
             } else {
                 ContentUnavailableView(
                     "No Line Selected",
@@ -176,10 +217,49 @@ private struct DubbingInspectorView: View {
     private func canPreview(_ segment: DubSegment) -> Bool {
         guard !controller.recording.isActive, !controller.sourceSeparation.isBusy else { return false }
         if controller.segmentPreviewMode != .original, segment.selectedTakeID == nil { return false }
-        if controller.segmentPreviewMode == .clean {
+        if controller.segmentPreviewMode == .cleanDub {
             return controller.hasCleanBackgroundForSelectedTrack(segment)
         }
         return true
+    }
+
+    private var selectedTakeID: Binding<UUID?> {
+        Binding(
+            get: { controller.selectedSegment?.selectedTakeID },
+            set: { id in
+                if let id { controller.selectTake(id) }
+            }
+        )
+    }
+
+    private var resultDescription: String {
+        switch controller.segmentPreviewMode {
+        case .original:
+            "Keep the movie's original audio for this line."
+        case .duckedMix:
+            "Lower the original mix and layer the selected take over it."
+        case .cleanDub:
+            "Use the cleaned background stem with the selected take."
+        case .takeOnly:
+            "Play only the selected recording, without movie audio."
+        }
+    }
+
+    private func acceptButtonTitle(_ segment: DubSegment) -> String {
+        if controller.segmentPreviewMode == .original {
+            return "Accept Original & Next"
+        }
+        let number = segment.takes.firstIndex { $0.id == segment.selectedTakeID }.map { $0 + 1 }
+        let takeTitle = number.map { "Take \($0)" } ?? "Selected Take"
+        return "Accept \(takeTitle) · \(controller.segmentPreviewMode.title)"
+    }
+
+    private func acceptedLabel(_ version: AcceptedSegmentVersion, in segment: DubSegment) -> String {
+        guard let takeID = version.takeID,
+              let index = segment.takes.firstIndex(where: { $0.id == takeID }) else {
+            return version.treatment.title
+        }
+        return "T\(index + 1) · \(version.treatment.shortTitle)"
     }
 
     @ViewBuilder
@@ -560,8 +640,10 @@ private struct ExportInspectorView: View {
 
             Section("Dub Summary") {
                 LabeledContent("Accepted lines", value: acceptedLineCount.formatted())
-                LabeledContent("Clean backgrounds", value: cleanLineCount.formatted())
-                LabeledContent("Ducking fallback", value: max(acceptedLineCount - cleanLineCount, 0).formatted())
+                LabeledContent("Clean Dub", value: acceptedCount(for: .cleanDub).formatted())
+                LabeledContent("Ducked Mix", value: acceptedCount(for: .duckedMix).formatted())
+                LabeledContent("Take Only", value: acceptedCount(for: .takeOnly).formatted())
+                LabeledContent("Original", value: acceptedCount(for: .original).formatted())
                 if usesLineSelection {
                     LabeledContent("Selected lines", value: exporter.selectedLineIDs.count.formatted())
                 }
@@ -741,14 +823,14 @@ private struct ExportInspectorView: View {
     }
 
     private var acceptedLineCount: Int {
-        controller.project?.segments.filter { $0.status == .accepted && $0.selectedTakeID != nil }.count ?? 0
+        controller.project?.segments.filter {
+            controller.effectiveAcceptedVersion(for: $0) != nil
+        }.count ?? 0
     }
 
-    private var cleanLineCount: Int {
+    private func acceptedCount(for treatment: SegmentMixTreatment) -> Int {
         controller.project?.segments.filter {
-            $0.status == .accepted
-                && $0.selectedTakeID != nil
-                && controller.hasCleanBackgroundForSelectedTrack($0)
+            controller.effectiveAcceptedVersion(for: $0)?.treatment == treatment
         }.count ?? 0
     }
 

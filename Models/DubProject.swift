@@ -1,7 +1,7 @@
 import Foundation
 
 struct DubProject: Codable, Identifiable, Hashable, Sendable {
-    static let currentSchemaVersion = 7
+    static let currentSchemaVersion = 8
 
     var schemaVersion: Int
     let id: UUID

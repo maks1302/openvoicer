@@ -23,21 +23,62 @@ actor FFmpegExportService: ExportService {
         progress: @escaping @Sendable (ExportProgress) -> Void
     ) async throws {
         guard let executableURL = Self.findExecutable(named: "ffmpeg") else {
-            throw FFmpegError.notInstalled
+            throw ExportError.couldNotLaunch("FFmpeg is not installed.")
         }
 
         try FileManager.default.createDirectory(
             at: job.destinationURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        _ = FileManager.default.createFile(atPath: job.logURL.path, contents: nil)
-        let arguments = ExportCommandBuilder.arguments(for: job)
+        let expectedDuration = max(job.scope.outputDuration(sourceDuration: job.sourceDuration), 0.01)
+
+        do {
+            progress(.init(fraction: 0.01, message: "Preparing export…"))
+            var result = try await execute(
+                executableURL: executableURL,
+                arguments: ExportCommandBuilder.arguments(for: job),
+                expectedDuration: expectedDuration,
+                progress: progress
+            )
+            try Task.checkCancellation()
+
+            if result.exitCode != 0, job.scope.requiresVideoEncoding {
+                progress(.init(fraction: 0.01, message: "Using compatibility video encoder…"))
+                try? FileManager.default.removeItem(at: job.destinationURL)
+                result = try await execute(
+                    executableURL: executableURL,
+                    arguments: ExportCommandBuilder.arguments(for: job, softwareVideoEncoding: true),
+                    expectedDuration: expectedDuration,
+                    progress: progress
+                )
+                try Task.checkCancellation()
+            }
+
+            try? result.summary.write(to: job.logURL, atomically: true, encoding: .utf8)
+            guard result.exitCode == 0 else {
+                logger.error("FFmpeg export failed: \(result.summary, privacy: .public)")
+                throw ExportError.renderingFailed(result.summary)
+            }
+            progress(.init(fraction: 1, message: "Export complete"))
+        } catch {
+            activeProcess = nil
+            if error is CancellationError {
+                try? FileManager.default.removeItem(at: job.destinationURL)
+            }
+            throw error
+        }
+    }
+
+    private func execute(
+        executableURL: URL,
+        arguments: [String],
+        expectedDuration: TimeInterval,
+        progress: @escaping @Sendable (ExportProgress) -> Void
+    ) async throws -> ExportProcessResult {
         let process = Process()
         let progressPipe = Pipe()
         let errorPipe = Pipe()
         let diagnostics = ExportDiagnostics()
-        let expectedDuration = max(job.scope.outputDuration(sourceDuration: job.sourceDuration), 0.01)
-
         process.executableURL = executableURL
         process.arguments = arguments
         process.standardOutput = progressPipe
@@ -60,7 +101,6 @@ actor FFmpegExportService: ExportService {
         }
 
         do {
-            progress(.init(fraction: 0.01, message: "Preparing export…"))
             try process.run()
             await withTaskCancellationHandler {
                 await withCheckedContinuation { continuation in
@@ -73,21 +113,14 @@ actor FFmpegExportService: ExportService {
             _ = await diagnosticsTask.result
             activeProcess = nil
             try Task.checkCancellation()
-
-            let summary = await diagnostics.summary
-            try? summary.write(to: job.logURL, atomically: true, encoding: .utf8)
-            guard process.terminationStatus == 0 else {
-                logger.error("FFmpeg export failed: \(summary, privacy: .public)")
-                throw ExportError.renderingFailed(summary)
-            }
-            progress(.init(fraction: 1, message: "Export complete"))
+            return ExportProcessResult(
+                exitCode: process.terminationStatus,
+                summary: await diagnostics.summary
+            )
         } catch {
             activeProcess = nil
             progressTask.cancel()
             diagnosticsTask.cancel()
-            if error is CancellationError {
-                try? FileManager.default.removeItem(at: job.destinationURL)
-            }
             throw error
         }
     }
@@ -108,6 +141,20 @@ actor FFmpegExportService: ExportService {
     }
 }
 
+private struct ExportProcessResult: Sendable {
+    let exitCode: Int32
+    let summary: String
+}
+
+private extension ExportRenderScope {
+    var requiresVideoEncoding: Bool {
+        switch self {
+        case .finishedMovie: false
+        case .continuous, .reviewReel: true
+        }
+    }
+}
+
 private actor ExportDiagnostics {
     private var lines: [String] = []
 
@@ -122,7 +169,7 @@ private actor ExportDiagnostics {
 }
 
 enum ExportCommandBuilder {
-    static func arguments(for job: ExportJob) -> [String] {
+    static func arguments(for job: ExportJob, softwareVideoEncoding: Bool = false) -> [String] {
         var arguments = ["-hide_banner", "-nostdin", "-y", "-i", job.sourceURL.path]
         var inputs: [UUID: (take: Int, background: Int?)] = [:]
         var nextInput = 1
@@ -148,11 +195,21 @@ enum ExportCommandBuilder {
             arguments += ["-c:v", "copy"]
         case .continuous, .reviewReel:
             arguments += ["-map", "[vout]", "-map", "[aout]"]
-            arguments += [
-                "-c:v", "h264_videotoolbox",
-                "-b:v", "12M",
-                "-pix_fmt", "yuv420p"
-            ]
+            if softwareVideoEncoding {
+                arguments += [
+                    "-c:v", "libx264",
+                    "-preset", "medium",
+                    "-crf", "18",
+                    "-pix_fmt", "yuv420p"
+                ]
+            } else {
+                arguments += [
+                    "-c:v", "h264_videotoolbox",
+                    "-allow_sw", "1",
+                    "-b:v", "12M",
+                    "-pix_fmt", "yuv420p"
+                ]
+            }
         }
 
         arguments += [
@@ -177,7 +234,10 @@ enum ExportCommandBuilder {
         var baseLabel = "base0"
         for (index, line) in job.lines.enumerated() {
             let nextLabel = "base\(index + 1)"
-            let target = line.backgroundURL == nil ? Double(job.duckedOriginalVolume) : 0
+            let target: Double = switch line.treatment {
+            case .duckedMix: Double(job.duckedOriginalVolume)
+            case .cleanDub, .takeOnly: 0
+            }
             filters.append("[\(baseLabel)]volume='\(volumeExpression(start: line.startTime, end: line.endTime, target: target))':eval=frame[\(nextLabel)]")
             baseLabel = nextLabel
         }

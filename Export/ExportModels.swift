@@ -63,8 +63,15 @@ struct ExportLineAsset: Sendable {
     let backgroundURL: URL?
     let backgroundPreRoll: TimeInterval
     let backgroundGain: Float
+    let treatment: ExportMixTreatment
 
     var duration: TimeInterval { max(0, endTime - startTime) }
+}
+
+enum ExportMixTreatment: Sendable {
+    case duckedMix
+    case cleanDub
+    case takeOnly
 }
 
 enum ExportRenderScope: Sendable {
@@ -97,6 +104,7 @@ enum ExportError: LocalizedError {
     case noCurrentLine
     case noSelectedLines
     case noAcceptedLines
+    case cleanBackgroundUnavailable
     case invalidTimeRange
     case couldNotLaunch(String)
     case renderingFailed(String)
@@ -111,6 +119,8 @@ enum ExportError: LocalizedError {
             "Select at least one dialogue line to export."
         case .noAcceptedLines:
             "There are no accepted dubbed lines to export."
+        case .cleanBackgroundUnavailable:
+            "An accepted Clean Dub line no longer has a matching clean background. Reprocess that line or accept a different result."
         case .invalidTimeRange:
             "The export end time must be after the start time and inside the movie."
         case .couldNotLaunch(let details):

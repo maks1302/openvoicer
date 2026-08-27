@@ -61,10 +61,12 @@ struct RecordingActionButton: View {
             } label: {
                 Label(
                     controller.selectedSegment?.takes.isEmpty == false ? "Record Another" : "Record",
-                    systemImage: "record.circle"
+                    systemImage: "record.circle.fill"
                 )
+                .frame(maxWidth: .infinity, minHeight: 26)
             }
             .buttonStyle(.borderedProminent)
+            .controlSize(.large)
             .tint(.red)
             .disabled(controller.selectedSegment == nil)
 
@@ -74,9 +76,10 @@ struct RecordingActionButton: View {
             } label: {
                 Text("\(value)")
                     .font(.title2.monospacedDigit().weight(.bold))
-                    .frame(minWidth: 70)
+                    .frame(maxWidth: .infinity, minHeight: 26)
             }
             .buttonStyle(.borderedProminent)
+            .controlSize(.large)
             .tint(.orange)
             .help("Cancel Countdown")
 
@@ -85,8 +88,10 @@ struct RecordingActionButton: View {
                 controller.toggleRecording()
             } label: {
                 Label("Stop", systemImage: "stop.fill")
+                    .frame(maxWidth: .infinity, minHeight: 26)
             }
             .buttonStyle(.borderedProminent)
+            .controlSize(.large)
             .tint(.red)
 
         case .finishing:
@@ -97,18 +102,5 @@ struct RecordingActionButton: View {
                     .foregroundStyle(.secondary)
             }
         }
-    }
-}
-
-struct AcceptTakeButton: View {
-    @Bindable var controller: ProjectController
-
-    var body: some View {
-        Button("Accept & Next") {
-            controller.acceptSelectedTakeAndAdvance()
-        }
-        .buttonStyle(.borderedProminent)
-        .tint(.green)
-        .disabled(controller.recording.isActive || controller.selectedSegment?.selectedTakeID == nil)
     }
 }
