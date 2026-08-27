@@ -14,6 +14,7 @@ final class PlaybackController {
     @ObservationIgnored private var endObserver: NSObjectProtocol?
     @ObservationIgnored private var boundaryTimeObserver: Any?
     @ObservationIgnored var onPlaybackStopped: (@MainActor @Sendable () -> Void)?
+    @ObservationIgnored var onTimeUpdated: (@MainActor @Sendable (TimeInterval) -> Void)?
 
     init() {
         periodicTimeObserver = player.addPeriodicTimeObserver(
@@ -22,6 +23,9 @@ final class PlaybackController {
         ) { [weak self] time in
             MainActor.assumeIsolated {
                 self?.currentTime = time.seconds.isFinite ? time.seconds : 0
+                if let self {
+                    self.onTimeUpdated?(self.currentTime)
+                }
             }
         }
 
@@ -50,6 +54,7 @@ final class PlaybackController {
 
     func load(url: URL, duration: TimeInterval) {
         cancelBoundedPlayback()
+        onPlaybackStopped?()
         player.replaceCurrentItem(with: AVPlayerItem(url: url))
         currentTime = 0
         self.duration = duration
@@ -66,6 +71,7 @@ final class PlaybackController {
 
     func clear() {
         cancelBoundedPlayback()
+        onPlaybackStopped?()
         player.pause()
         player.replaceCurrentItem(with: nil)
         currentTime = 0

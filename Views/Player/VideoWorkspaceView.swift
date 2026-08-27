@@ -50,7 +50,7 @@ struct VideoWorkspaceView: View {
 
             RecordingPanelView(controller: controller)
 
-            PlaybackControls(playback: controller.playback)
+            PlaybackControls(controller: controller)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 14)
                 .background(.bar)
@@ -72,7 +72,9 @@ struct VideoWorkspaceView: View {
 }
 
 private struct PlaybackControls: View {
-    @Bindable var playback: PlaybackController
+    @Bindable var controller: ProjectController
+
+    private var playback: PlaybackController { controller.playback }
 
     var body: some View {
         VStack(spacing: 10) {
@@ -88,14 +90,14 @@ private struct PlaybackControls: View {
                 Spacer()
 
                 Button {
-                    playback.skip(by: -5)
+                    controller.skipMainPlayback(by: -5)
                 } label: {
                     Image(systemName: "gobackward.5")
                 }
                 .help("Back 5 Seconds")
 
                 Button {
-                    playback.togglePlayback()
+                    controller.toggleMainPlayback()
                 } label: {
                     Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
                         .frame(width: 22, height: 22)
@@ -105,13 +107,23 @@ private struct PlaybackControls: View {
                 .help(playback.isPlaying ? "Pause" : "Play")
 
                 Button {
-                    playback.skip(by: 5)
+                    controller.skipMainPlayback(by: 5)
                 } label: {
                     Image(systemName: "goforward.5")
                 }
                 .help("Forward 5 Seconds")
 
                 Spacer()
+
+                Picker("Playback", selection: $controller.mainPlaybackMode) {
+                    ForEach(ProjectController.MainPlaybackMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 150)
+                .help("Choose whether the main player uses source audio or accepted line versions")
 
                 Text(TimeFormatter.playbackTime(playback.duration))
                     .monospacedDigit()
@@ -125,7 +137,7 @@ private struct PlaybackControls: View {
     private var playbackPosition: Binding<Double> {
         Binding(
             get: { playback.currentTime },
-            set: { playback.seek(to: $0) }
+            set: { controller.seekMainPlayback(to: $0) }
         )
     }
 }

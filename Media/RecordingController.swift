@@ -83,6 +83,7 @@ final class RecordingController {
     }
 
     func cancel() {
+        stopTakePlayback()
         recorder.cancel()
         state = .idle
         inputLevel = 0
@@ -92,15 +93,22 @@ final class RecordingController {
         lastLiveSampleIndex = 0
     }
 
-    func playTake(id: UUID, at url: URL, gain: Float, timelineDuration: TimeInterval? = nil) throws {
+    func playTake(
+        id: UUID,
+        at url: URL,
+        gain: Float,
+        timelineDuration: TimeInterval? = nil,
+        startOffset: TimeInterval = 0
+    ) throws {
         stopTakePlayback()
         let player = try AVAudioPlayer(contentsOf: url)
         player.volume = min(max(gain, 0), 1)
+        player.currentTime = min(max(startOffset, 0), player.duration)
         player.prepareToPlay()
         guard player.play() else { throw RecordingPlaybackError.couldNotPlay }
         audioPlayer = player
         playingTakeID = id
-        takePlaybackElapsed = 0
+        takePlaybackElapsed = player.currentTime
         playbackCompletionTask = Task { [weak self] in
             while !Task.isCancelled, player.isPlaying {
                 self?.takePlaybackElapsed = min(
@@ -122,28 +130,37 @@ final class RecordingController {
         takeGain: Float,
         backgroundURL: URL,
         backgroundOffset: TimeInterval,
-        backgroundGain: Float
+        backgroundGain: Float,
+        startOffset: TimeInterval = 0,
+        timelineDuration: TimeInterval? = nil
     ) throws {
         stopTakePlayback()
         let voice = try AVAudioPlayer(contentsOf: takeURL)
         let background = try AVAudioPlayer(contentsOf: backgroundURL)
         voice.volume = min(max(takeGain, 0), 1)
         background.volume = min(max(backgroundGain, 0), 1)
-        background.currentTime = min(max(backgroundOffset, 0), background.duration)
+        voice.currentTime = min(max(startOffset, 0), voice.duration)
+        background.currentTime = min(max(backgroundOffset + startOffset, 0), background.duration)
         voice.prepareToPlay()
         background.prepareToPlay()
 
         let deviceTime = max(voice.deviceCurrentTime, background.deviceCurrentTime) + 0.02
-        guard voice.play(atTime: deviceTime), background.play(atTime: deviceTime) else {
+        let hasRemainingVoice = voice.currentTime < voice.duration - 0.01
+        let voiceStarted = !hasRemainingVoice || voice.play(atTime: deviceTime)
+        guard voiceStarted, background.play(atTime: deviceTime) else {
             throw RecordingPlaybackError.couldNotPlay
         }
-        audioPlayer = voice
+        audioPlayer = hasRemainingVoice ? voice : nil
         backgroundPlayer = background
         playingTakeID = takeID
-        takePlaybackElapsed = 0
+        takePlaybackElapsed = startOffset
         playbackCompletionTask = Task { [weak self] in
-            while !Task.isCancelled, voice.isPlaying {
-                self?.takePlaybackElapsed = voice.currentTime
+            let startedAt = ContinuousClock.now
+            let remainingDuration = max((timelineDuration ?? voice.duration) - startOffset, 0)
+            while !Task.isCancelled, startedAt.duration(to: .now) < .seconds(remainingDuration) {
+                let elapsed = startedAt.duration(to: .now).components
+                let elapsedSeconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
+                self?.takePlaybackElapsed = min(startOffset + elapsedSeconds, timelineDuration ?? voice.duration)
                 try? await Task.sleep(for: .milliseconds(33))
             }
             guard !Task.isCancelled, self?.playingTakeID == takeID else { return }

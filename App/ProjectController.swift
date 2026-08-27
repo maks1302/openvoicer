@@ -8,6 +8,13 @@ import UniformTypeIdentifiers
 @Observable
 final class ProjectController {
     private static let playbackPreparationVersion = 2
+    enum MainPlaybackMode: String, CaseIterable, Identifiable {
+        case original
+        case dubbed
+
+        var id: Self { self }
+        var title: String { self == .original ? "Original" : "Dubbed" }
+    }
 
     private(set) var project: DubProject?
     private(set) var projectURL: URL?
@@ -17,6 +24,16 @@ final class ProjectController {
     private(set) var selectedSegmentID: UUID?
     private(set) var cleaningSegmentID: UUID?
     var segmentPreviewMode: SegmentMixTreatment = .duckedMix
+    var mainPlaybackMode: MainPlaybackMode = .original {
+        didSet {
+            guard mainPlaybackMode != oldValue else { return }
+            stopContinuousDubOverlay()
+            continuousDubPreviewActive = playback.isPlaying && mainPlaybackMode == .dubbed
+            if continuousDubPreviewActive {
+                synchronizeContinuousDubPreview(at: playback.currentTime)
+            }
+        }
+    }
     var errorMessage: String?
 
     let playback = PlaybackController()
@@ -38,10 +55,15 @@ final class ProjectController {
     @ObservationIgnored private var finishingRecordingTask: Task<Void, Never>?
     @ObservationIgnored private var pendingTake: PendingRecordingTake?
     @ObservationIgnored private var cleanBackgroundPreparationTask: Task<Void, Never>?
+    @ObservationIgnored private var continuousDubPreviewActive = false
+    @ObservationIgnored private var activeDubbedSegmentID: UUID?
 
     init() {
         playback.onPlaybackStopped = { [weak self] in
             self?.finishSegmentPreview()
+        }
+        playback.onTimeUpdated = { [weak self] time in
+            self?.synchronizeContinuousDubPreview(at: time)
         }
     }
 
@@ -213,11 +235,13 @@ final class ProjectController {
     }
 
     func playSelectedSegment() {
+        continuousDubPreviewActive = false
         previewSelectedSegment(mode: .original)
     }
 
     func playSelectedSegmentWithContext() {
         guard let segment = selectedSegment, let settings = project?.settings else { return }
+        continuousDubPreviewActive = false
         playback.play(
             from: max(0, segment.startTime - settings.preRollDuration),
             to: min(playback.duration, segment.endTime + settings.postRollDuration)
@@ -232,6 +256,7 @@ final class ProjectController {
 
     func previewSelectedSegment(mode: SegmentMixTreatment? = nil) {
         guard let segment = selectedSegment, let project else { return }
+        continuousDubPreviewActive = false
         let mode = mode ?? segmentPreviewMode
         segmentPreviewMode = mode
         recording.stopTakePlayback()
@@ -388,6 +413,34 @@ final class ProjectController {
             }
         }
         return true
+    }
+
+    func toggleMainPlayback() {
+        guard !recording.isActive else { return }
+        if playback.isPlaying {
+            playback.pause()
+            continuousDubPreviewActive = false
+        } else {
+            recording.stopTakePlayback()
+            playback.togglePlayback()
+            continuousDubPreviewActive = mainPlaybackMode == .dubbed
+            if continuousDubPreviewActive {
+                synchronizeContinuousDubPreview(at: playback.currentTime)
+            }
+        }
+    }
+
+    func seekMainPlayback(to time: TimeInterval) {
+        stopContinuousDubOverlay()
+        playback.seek(to: time)
+        continuousDubPreviewActive = playback.isPlaying && mainPlaybackMode == .dubbed
+        if continuousDubPreviewActive {
+            synchronizeContinuousDubPreview(at: time)
+        }
+    }
+
+    func skipMainPlayback(by seconds: TimeInterval) {
+        seekMainPlayback(to: playback.currentTime + seconds)
     }
 
     func cancelSourceSeparation() {
@@ -1123,8 +1176,100 @@ final class ProjectController {
     }
 
     private func finishSegmentPreview() {
+        stopContinuousDubOverlay()
+    }
+
+    private func synchronizeContinuousDubPreview(at time: TimeInterval) {
+        guard continuousDubPreviewActive,
+              playback.isPlaying,
+              !recording.isActive,
+              let project else { return }
+
+        let segment = project.segments.first {
+            time >= $0.startTime
+                && time < $0.endTime
+                && effectiveAcceptedVersion(for: $0) != nil
+        }
+        guard segment?.id != activeDubbedSegmentID else { return }
+
+        stopContinuousDubOverlay()
+        guard let segment,
+              let version = effectiveAcceptedVersion(for: segment) else { return }
+        activeDubbedSegmentID = segment.id
+
+        if version.treatment == .original {
+            playback.player.volume = project.settings.originalVolume
+            return
+        }
+
+        guard let takeID = version.takeID,
+              let take = segment.takes.first(where: { $0.id == takeID }),
+              let takeURL = recordingURL(for: take) else { return }
+        let offset = min(max(time - segment.startTime, 0), segment.duration)
+
+        do {
+            switch version.treatment {
+            case .original:
+                break
+            case .duckedMix:
+                playback.player.volume = project.settings.duckedOriginalVolume
+                if offset < take.duration - 0.01 {
+                    try recording.playTake(
+                        id: take.id,
+                        at: takeURL,
+                        gain: take.gain,
+                        timelineDuration: segment.duration,
+                        startOffset: offset
+                    )
+                }
+            case .takeOnly:
+                playback.player.volume = 0
+                if offset < take.duration - 0.01 {
+                    try recording.playTake(
+                        id: take.id,
+                        at: takeURL,
+                        gain: take.gain,
+                        timelineDuration: segment.duration,
+                        startOffset: offset
+                    )
+                }
+            case .cleanDub:
+                playback.player.volume = 0
+                if let asset = segment.separatedBackground,
+                   hasCleanBackgroundForSelectedTrack(segment),
+                   let backgroundURL = separatedBackgroundURL(for: asset) {
+                    try recording.playSeparatedPreview(
+                        takeID: take.id,
+                        takeURL: takeURL,
+                        takeGain: take.gain,
+                        backgroundURL: backgroundURL,
+                        backgroundOffset: asset.preRollDuration,
+                        backgroundGain: project.settings.cleanBackgroundVolume,
+                        startOffset: offset,
+                        timelineDuration: segment.duration
+                    )
+                } else {
+                    if offset < take.duration - 0.01 {
+                        try recording.playTake(
+                            id: take.id,
+                            at: takeURL,
+                            gain: take.gain,
+                            timelineDuration: segment.duration,
+                            startOffset: offset
+                        )
+                    }
+                }
+            }
+        } catch {
+            stopContinuousDubOverlay()
+            present(error, fallback: "The accepted version could not be previewed.")
+        }
+    }
+
+    private func stopContinuousDubOverlay() {
         recording.stopTakePlayback()
         playback.player.volume = project?.settings.originalVolume ?? 1
+        activeDubbedSegmentID = nil
     }
 
     private func restoreSourceVideoIfPresent() async throws {
