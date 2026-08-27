@@ -31,6 +31,7 @@ final class ProjectController {
     let waveforms = WaveformController()
     let sourceSeparation = SourceSeparationController()
     let recentProjects = RecentProjectsStore()
+    let exportController = ExportController()
 
     private let projectStore = ProjectStore()
     private let metadataLoader = VideoMetadataLoader()
@@ -107,6 +108,49 @@ final class ProjectController {
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await importVideo(at: url) }
+    }
+
+    func showExportPanel() {
+        guard let project, let projectURL, let sourceURL = playback.sourceURL else {
+            errorMessage = ExportError.sourceUnavailable.localizedDescription
+            return
+        }
+
+        do {
+            let scope = try makeExportScope(project: project)
+            let lines = makeExportLineAssets(project: project, projectURL: projectURL, scope: scope)
+            if case .reviewReel = scope, lines.isEmpty {
+                throw ExportError.noAcceptedLines
+            }
+
+            let panel = NSSavePanel()
+            panel.title = "Export Dubbed Video"
+            panel.prompt = "Export"
+            panel.allowedContentTypes = [.mpeg4Movie]
+            panel.canCreateDirectories = true
+            panel.nameFieldStringValue = exportFileName(projectName: project.name)
+            guard panel.runModal() == .OK, let selectedURL = panel.url else { return }
+            let destination = selectedURL.pathExtension.lowercased() == "mp4"
+                ? selectedURL
+                : selectedURL.appendingPathExtension("mp4")
+            let trackIndex = selectedAudioTrack.flatMap { track in
+                project.sourceVideo?.metadata.audioTracks.firstIndex(of: track)
+            } ?? 0
+            let logURL = projectURL.appending(path: "temp/export.log")
+            let job = ExportJob(
+                sourceURL: sourceURL,
+                destinationURL: destination,
+                logURL: logURL,
+                sourceDuration: playback.duration,
+                audioTrackIndex: trackIndex,
+                scope: scope,
+                lines: lines,
+                duckedOriginalVolume: project.settings.duckedOriginalVolume
+            )
+            exportController.start(job: job)
+        } catch {
+            present(error, fallback: "The export settings are invalid.")
+        }
     }
 
     func showSubtitleImportPanel() {
@@ -515,6 +559,148 @@ final class ProjectController {
                 present(error, fallback: "The project could not be saved.")
             }
         }
+    }
+
+    private func makeExportScope(project: DubProject) throws -> ExportRenderScope {
+        let duration = playback.duration
+        switch exportController.exportType {
+        case .finishedMovie:
+            return .finishedMovie
+
+        case .continuousClip:
+            let range: ExportTimeRange
+            switch exportController.clipRangeMode {
+            case .currentLine:
+                guard let segment = selectedSegment else { throw ExportError.noCurrentLine }
+                range = rangeWithContext(
+                    start: segment.startTime,
+                    end: segment.endTime,
+                    duration: duration
+                )
+            case .selectedLines:
+                let selected = project.segments.filter { exportController.selectedLineIDs.contains($0.id) }
+                guard let start = selected.map(\.startTime).min(),
+                      let end = selected.map(\.endTime).max() else {
+                    throw ExportError.noSelectedLines
+                }
+                range = rangeWithContext(start: start, end: end, duration: duration)
+            case .custom:
+                range = ExportTimeRange(
+                    start: exportController.customStartTime,
+                    end: exportController.customEndTime
+                )
+            }
+            guard range.start >= 0, range.end <= duration, range.duration > 0 else {
+                throw ExportError.invalidTimeRange
+            }
+            return .continuous(range)
+
+        case .reviewReel:
+            let candidates: [DubSegment]
+            switch exportController.reviewLineMode {
+            case .accepted:
+                candidates = project.segments.filter {
+                    $0.status == .accepted && $0.selectedTakeID != nil
+                }
+            case .selected:
+                guard !exportController.selectedLineIDs.isEmpty else {
+                    throw ExportError.noSelectedLines
+                }
+                candidates = project.segments.filter {
+                    exportController.selectedLineIDs.contains($0.id)
+                        && $0.status == .accepted
+                        && $0.selectedTakeID != nil
+                }
+            }
+            guard !candidates.isEmpty else { throw ExportError.noAcceptedLines }
+            let ranges = candidates
+                .sorted { $0.startTime < $1.startTime }
+                .map {
+                    rangeWithContext(start: $0.startTime, end: $0.endTime, duration: duration)
+                }
+            return .reviewReel(mergeOverlappingRanges(ranges))
+        }
+    }
+
+    private func rangeWithContext(
+        start: TimeInterval,
+        end: TimeInterval,
+        duration: TimeInterval
+    ) -> ExportTimeRange {
+        ExportTimeRange(
+            start: max(0, start - exportController.contextDuration),
+            end: min(duration, end + exportController.contextDuration)
+        )
+    }
+
+    private func mergeOverlappingRanges(_ ranges: [ExportTimeRange]) -> [ExportTimeRange] {
+        var merged: [ExportTimeRange] = []
+        for range in ranges where range.duration > 0 {
+            if let last = merged.last, range.start <= last.end {
+                merged[merged.count - 1].end = max(last.end, range.end)
+            } else {
+                merged.append(range)
+            }
+        }
+        return merged
+    }
+
+    private func makeExportLineAssets(
+        project: DubProject,
+        projectURL: URL,
+        scope: ExportRenderScope
+    ) -> [ExportLineAsset] {
+        let ranges: [ExportTimeRange]
+        switch scope {
+        case .finishedMovie:
+            ranges = [ExportTimeRange(start: 0, end: playback.duration)]
+        case .continuous(let range):
+            ranges = [range]
+        case .reviewReel(let reelRanges):
+            ranges = reelRanges
+        }
+
+        return project.segments.compactMap { segment in
+            guard segment.status == .accepted,
+                  ranges.contains(where: { segment.endTime > $0.start && segment.startTime < $0.end }),
+                  let selectedTakeID = segment.selectedTakeID,
+                  let take = segment.takes.first(where: { $0.id == selectedTakeID }) else { return nil }
+
+            let takeURL = projectURL.appending(path: "recordings").appending(path: take.fileName)
+            guard FileManager.default.fileExists(atPath: takeURL.path) else { return nil }
+
+            var backgroundURL: URL?
+            var backgroundPreRoll: TimeInterval = 0
+            if hasCleanBackgroundForSelectedTrack(segment), let background = segment.separatedBackground {
+                let candidate = projectURL.appending(path: "separation-cache").appending(path: background.fileName)
+                if FileManager.default.fileExists(atPath: candidate.path) {
+                    backgroundURL = candidate
+                    backgroundPreRoll = background.preRollDuration
+                }
+            }
+
+            return ExportLineAsset(
+                segmentID: segment.id,
+                startTime: segment.startTime,
+                endTime: segment.endTime,
+                takeURL: takeURL,
+                takeDuration: take.duration,
+                takeGain: take.gain,
+                backgroundURL: backgroundURL,
+                backgroundPreRoll: backgroundPreRoll,
+                backgroundGain: project.settings.cleanBackgroundVolume
+            )
+        }
+    }
+
+    private func exportFileName(projectName: String) -> String {
+        let suffix: String
+        switch exportController.exportType {
+        case .finishedMovie: suffix = "Dubbed"
+        case .continuousClip: suffix = "Clip"
+        case .reviewReel: suffix = "Review Reel"
+        }
+        return "\(projectName) – \(suffix).mp4"
     }
 
     private func createProjectForDroppedVideo(_ videoURL: URL) {

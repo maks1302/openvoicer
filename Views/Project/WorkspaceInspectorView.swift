@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct WorkspaceInspectorView: View {
@@ -36,6 +37,8 @@ struct WorkspaceInspectorView: View {
             AudioInspectorView(controller: controller)
         case .project:
             ProjectInspectorView(controller: controller)
+        case .export:
+            ExportInspectorView(controller: controller)
         }
     }
 }
@@ -529,5 +532,239 @@ private struct ProjectInspectorView: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+private struct ExportInspectorView: View {
+    @Bindable var controller: ProjectController
+
+    private var exporter: ExportController { controller.exportController }
+
+    var body: some View {
+        @Bindable var exporter = exporter
+
+        Form {
+            Section("Export Type") {
+                Picker("Type", selection: $exporter.exportType) {
+                    ForEach(ExportType.allCases) { type in
+                        Text(type.title).tag(type)
+                    }
+                }
+
+                Text(exportDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            scopeSettings(exporter: exporter)
+
+            Section("Dub Summary") {
+                LabeledContent("Accepted lines", value: acceptedLineCount.formatted())
+                LabeledContent("Clean backgrounds", value: cleanLineCount.formatted())
+                LabeledContent("Ducking fallback", value: max(acceptedLineCount - cleanLineCount, 0).formatted())
+                if usesLineSelection {
+                    LabeledContent("Selected lines", value: exporter.selectedLineIDs.count.formatted())
+                }
+            }
+
+            exportStatus(exporter: exporter)
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            exporter.configure(for: controller.playback.duration)
+        }
+    }
+
+    @ViewBuilder
+    private func scopeSettings(exporter: ExportController) -> some View {
+        @Bindable var exporter = exporter
+
+        switch exporter.exportType {
+        case .finishedMovie:
+            Section("Scope") {
+                LabeledContent("Range", value: "Entire movie")
+                LabeledContent("Duration", value: TimeFormatter.playbackTime(controller.playback.duration))
+                Text("Unfinished lines keep their original audio.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+        case .continuousClip:
+            Section("Clip Range") {
+                Picker("Range", selection: $exporter.clipRangeMode) {
+                    ForEach(ClipRangeMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+
+                if exporter.clipRangeMode == .custom {
+                    TextField("Start (seconds)", value: $exporter.customStartTime, format: .number)
+                    TextField("End (seconds)", value: $exporter.customEndTime, format: .number)
+                    HStack {
+                        Button("Set Start") {
+                            exporter.customStartTime = controller.playback.currentTime
+                        }
+                        Button("Set End") {
+                            exporter.customEndTime = controller.playback.currentTime
+                        }
+                    }
+                    Text(
+                        "\(TimeFormatter.playbackTime(exporter.customStartTime)) – \(TimeFormatter.playbackTime(exporter.customEndTime))"
+                    )
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                } else {
+                    contextControl(exporter: exporter)
+                }
+            }
+
+            if exporter.clipRangeMode == .selectedLines {
+                lineSelection(exporter: exporter, acceptedOnly: false)
+            }
+
+        case .reviewReel:
+            Section("Review Scope") {
+                Picker("Lines", selection: $exporter.reviewLineMode) {
+                    ForEach(ReviewLineMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                contextControl(exporter: exporter)
+                Text("Overlapping clips are joined so nearby dialogue is not repeated.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if exporter.reviewLineMode == .selected {
+                lineSelection(exporter: exporter, acceptedOnly: true)
+            }
+        }
+    }
+
+    private func contextControl(exporter: ExportController) -> some View {
+        @Bindable var exporter = exporter
+        return Stepper(value: $exporter.contextDuration, in: 0...5, step: 0.5) {
+            LabeledContent(
+                "Context",
+                value: exporter.contextDuration.formatted(.number.precision(.fractionLength(1))) + " s"
+            )
+        }
+    }
+
+    private func lineSelection(exporter: ExportController, acceptedOnly: Bool) -> some View {
+        Section("Line Selection") {
+            HStack {
+                Button("Select Accepted") {
+                    exporter.selectedLineIDs = Set(
+                        (controller.project?.segments ?? [])
+                            .filter { $0.status == .accepted }
+                            .map(\.id)
+                    )
+                }
+                Button("Clear") {
+                    exporter.selectedLineIDs = []
+                }
+            }
+
+            ForEach(Array((controller.project?.segments ?? []).enumerated()), id: \.element.id) { index, segment in
+                let canSelect = !acceptedOnly || segment.status == .accepted
+                Button {
+                    exporter.toggleLine(segment.id)
+                } label: {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: exporter.selectedLineIDs.contains(segment.id) ? "checkmark.square.fill" : "square")
+                            .foregroundStyle(exporter.selectedLineIDs.contains(segment.id) ? Color.accentColor : .secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(index + 1). \(segment.text.replacingOccurrences(of: "\n", with: " "))")
+                                .lineLimit(2)
+                            Text("\(TimeFormatter.playbackTime(segment.startTime)) · \(segment.status.rawValue.capitalized)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSelect)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func exportStatus(exporter: ExportController) -> some View {
+        Section("Output") {
+            switch exporter.state {
+            case .idle:
+                Button {
+                    controller.showExportPanel()
+                } label: {
+                    Label("Export MP4…", systemImage: "square.and.arrow.up")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(controller.project?.sourceVideo == nil)
+
+            case .exporting:
+                ProgressView(value: exporter.progress) {
+                    Text(exporter.message)
+                        .lineLimit(2)
+                }
+                Button("Cancel Export", role: .cancel) {
+                    exporter.cancel()
+                }
+
+            case .completed(let url):
+                Label("Export complete", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text(url.lastPathComponent)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Show in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+                Button("Export Another…") {
+                    exporter.resetResult()
+                    controller.showExportPanel()
+                }
+
+            case .failed(let message):
+                Label("Export failed", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Try Again") {
+                    exporter.resetResult()
+                }
+            }
+        }
+        .disabled(false)
+    }
+
+    private var acceptedLineCount: Int {
+        controller.project?.segments.filter { $0.status == .accepted && $0.selectedTakeID != nil }.count ?? 0
+    }
+
+    private var cleanLineCount: Int {
+        controller.project?.segments.filter {
+            $0.status == .accepted
+                && $0.selectedTakeID != nil
+                && controller.hasCleanBackgroundForSelectedTrack($0)
+        }.count ?? 0
+    }
+
+    private var usesLineSelection: Bool {
+        (exporter.exportType == .continuousClip && exporter.clipRangeMode == .selectedLines)
+            || (exporter.exportType == .reviewReel && exporter.reviewLineMode == .selected)
+    }
+
+    private var exportDescription: String {
+        switch exporter.exportType {
+        case .finishedMovie:
+            "Export the complete movie with every accepted take applied."
+        case .continuousClip:
+            "Export one uninterrupted portion of the movie with exact boundaries."
+        case .reviewReel:
+            "Join dubbed-line clips into a compact performance review."
+        }
     }
 }

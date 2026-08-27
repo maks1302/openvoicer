@@ -6,6 +6,7 @@ enum WorkspaceInspectorSection: String, CaseIterable, Identifiable {
     case dialogue
     case audio
     case project
+    case export
 
     var id: Self { self }
 
@@ -16,6 +17,7 @@ enum WorkspaceInspectorSection: String, CaseIterable, Identifiable {
         case .dialogue: "Dialogue"
         case .audio: "Audio"
         case .project: "Project"
+        case .export: "Export"
         }
     }
 
@@ -26,6 +28,7 @@ enum WorkspaceInspectorSection: String, CaseIterable, Identifiable {
         case .dialogue: "captions.bubble"
         case .audio: "waveform.badge.minus"
         case .project: "info.circle"
+        case .export: "square.and.arrow.up"
         }
     }
 
@@ -36,6 +39,7 @@ enum WorkspaceInspectorSection: String, CaseIterable, Identifiable {
         case .dialogue: "captions.bubble.fill"
         case .audio: "waveform.badge.minus"
         case .project: "info.circle.fill"
+        case .export: "square.and.arrow.up.fill"
         }
     }
 }
