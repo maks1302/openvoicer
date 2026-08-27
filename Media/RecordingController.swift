@@ -140,12 +140,14 @@ final class RecordingController {
         audioPlayer = voice
         backgroundPlayer = background
         playingTakeID = takeID
+        takePlaybackElapsed = 0
         playbackCompletionTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: .seconds(voice.duration))
-                guard !Task.isCancelled, self?.playingTakeID == takeID else { return }
-                self?.stopTakePlayback()
-            } catch { }
+            while !Task.isCancelled, voice.isPlaying {
+                self?.takePlaybackElapsed = voice.currentTime
+                try? await Task.sleep(for: .milliseconds(33))
+            }
+            guard !Task.isCancelled, self?.playingTakeID == takeID else { return }
+            self?.stopTakePlayback()
         }
     }
 
