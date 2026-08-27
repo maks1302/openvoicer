@@ -15,6 +15,7 @@ final class ProjectController {
     private(set) var isLoadingSubtitles = false
     private(set) var embeddedSubtitleTracks: [EmbeddedSubtitleTrack] = []
     private(set) var selectedSegmentID: UUID?
+    private(set) var cleaningSegmentID: UUID?
     var segmentPreviewMode: SegmentMixTreatment = .duckedMix
     var errorMessage: String?
 
@@ -36,6 +37,7 @@ final class ProjectController {
     @ObservationIgnored private var automaticStopTask: Task<Void, Never>?
     @ObservationIgnored private var finishingRecordingTask: Task<Void, Never>?
     @ObservationIgnored private var pendingTake: PendingRecordingTake?
+    @ObservationIgnored private var cleanBackgroundPreparationTask: Task<Void, Never>?
 
     init() {
         playback.onPlaybackStopped = { [weak self] in
@@ -284,14 +286,17 @@ final class ProjectController {
         }
     }
 
-    func prepareCleanBackground() {
+    @discardableResult
+    func prepareCleanBackground() -> Bool {
         guard let segment = selectedSegment,
+              cleaningSegmentID == nil,
               let projectURL,
               let sourceURL = playback.sourceURL,
               let selectedAudioTrack,
-              let audioTrackIndex = project?.sourceVideo?.metadata.audioTracks.firstIndex(of: selectedAudioTrack) else { return }
+              let audioTrackIndex = project?.sourceVideo?.metadata.audioTracks.firstIndex(of: selectedAudioTrack) else { return false }
         playback.pause()
         recording.stopTakePlayback()
+        cleaningSegmentID = segment.id
 
         let preRoll = min(2, segment.startTime)
         let postRoll = min(2, max(0, playback.duration - segment.endTime))
@@ -308,7 +313,7 @@ final class ProjectController {
         let relativeName = "\(segment.id.uuidString)-\(selectedAudioTrack.id).wav"
         let finalURL = projectURL.appending(path: "separation-cache").appending(path: relativeName)
 
-        Task { [weak self] in
+        cleanBackgroundPreparationTask = Task { [weak self] in
             guard let self else { return }
             do {
                 try FileManager.default.createDirectory(at: workingDirectory, withIntermediateDirectories: true)
@@ -320,6 +325,7 @@ final class ProjectController {
                     preserveMultichannel: isMultichannel,
                     destination: inputURL
                 )
+                try Task.checkCancellation()
                 sourceSeparation.prepare(
                     inputURL: inputURL,
                     outputURL: outputURL,
@@ -328,7 +334,13 @@ final class ProjectController {
                     centerCancellationStrength: centerCancellationStrength
                 ) { [weak self] result in
                     guard let self else { return }
-                    defer { try? FileManager.default.removeItem(at: workingDirectory) }
+                    defer {
+                        try? FileManager.default.removeItem(at: workingDirectory)
+                        if cleaningSegmentID == segment.id {
+                            cleaningSegmentID = nil
+                        }
+                        cleanBackgroundPreparationTask = nil
+                    }
                     switch result {
                     case .success:
                         do {
@@ -341,7 +353,7 @@ final class ProjectController {
                             } else {
                                 try FileManager.default.moveItem(at: outputURL, to: finalURL)
                             }
-                            updateSelectedSegment { current in
+                            updateSegment(segment.id) { current in
                                 current.separatedBackground = SourceSeparationAsset(
                                     fileName: relativeName,
                                     preRollDuration: preRoll,
@@ -352,7 +364,9 @@ final class ProjectController {
                                     sourceAudioTrackID: selectedAudioTrack.id
                                 )
                             }
-                            segmentPreviewMode = .cleanDub
+                            if selectedSegmentID == segment.id {
+                                segmentPreviewMode = .cleanDub
+                            }
                         } catch {
                             present(error, fallback: "The clean background could not be saved in the project.")
                         }
@@ -364,13 +378,23 @@ final class ProjectController {
                 }
             } catch {
                 try? FileManager.default.removeItem(at: workingDirectory)
-                present(error, fallback: "The movie audio could not be prepared for dialogue separation.")
+                if cleaningSegmentID == segment.id {
+                    cleaningSegmentID = nil
+                }
+                cleanBackgroundPreparationTask = nil
+                if !(error is CancellationError) {
+                    present(error, fallback: "The movie audio could not be prepared for dialogue separation.")
+                }
             }
         }
+        return true
     }
 
     func cancelSourceSeparation() {
+        cleanBackgroundPreparationTask?.cancel()
+        cleanBackgroundPreparationTask = nil
         sourceSeparation.cancel()
+        cleaningSegmentID = nil
     }
 
     func updateDuckedOriginalVolume(_ volume: Float) {
@@ -485,8 +509,7 @@ final class ProjectController {
 
     var canAcceptSelectedVersion: Bool {
         guard let segment = selectedSegment,
-              !recording.isActive,
-              !sourceSeparation.isBusy else { return false }
+              !recording.isActive else { return false }
         if segmentPreviewMode.requiresTake, segment.selectedTakeID == nil { return false }
         if segmentPreviewMode == .cleanDub {
             return hasCleanBackgroundForSelectedTrack(segment)
@@ -1058,6 +1081,15 @@ final class ProjectController {
         guard var project,
               let selectedSegmentID,
               let index = project.segments.firstIndex(where: { $0.id == selectedSegmentID }) else { return }
+        mutation(&project.segments[index])
+        project.modifiedAt = Date()
+        self.project = project
+        save()
+    }
+
+    private func updateSegment(_ id: UUID, mutation: (inout DubSegment) -> Void) {
+        guard var project,
+              let index = project.segments.firstIndex(where: { $0.id == id }) else { return }
         mutation(&project.segments[index])
         project.modifiedAt = Date()
         self.project = project

@@ -229,7 +229,9 @@ enum ExportCommandBuilder {
         inputs: [UUID: (take: Int, background: Int?)]
     ) -> String {
         var filters: [String] = []
-        filters.append("[0:a:\(job.audioTrackIndex)]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[base0]")
+        // Container audio can begin at a non-zero PTS (common in remuxed MKV/MOV files).
+        // Normalize it before placing zero-based take inputs on the movie timeline.
+        filters.append("[0:a:\(job.audioTrackIndex)]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS[base0]")
 
         var baseLabel = "base0"
         for (index, line) in job.lines.enumerated() {

@@ -17,9 +17,11 @@ struct CurrentSegmentView: View {
                 }
 
                 Text(segment.text)
-                    .font(.title3.weight(.medium))
+                    .font(.title2.weight(.bold))
+                    .multilineTextAlignment(.center)
                     .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 46, alignment: .center)
+                    .padding(.horizontal, 18)
 
                 HStack {
                     Button {

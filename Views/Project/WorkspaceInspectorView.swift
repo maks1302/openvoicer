@@ -45,8 +45,29 @@ struct WorkspaceInspectorView: View {
 
 private struct DubbingInspectorView: View {
     @Bindable var controller: ProjectController
+    @State private var bypassedVoiceRemovalSegmentIDs: Set<UUID> = []
 
     var body: some View {
+        ZStack {
+            dubbingForm
+                .blur(radius: showsVoiceRemovalPrompt ? 4 : 0)
+                .allowsHitTesting(!showsVoiceRemovalPrompt)
+
+            if showsVoiceRemovalPrompt, let segment = controller.selectedSegment {
+                voiceRemovalPrompt(segment)
+                    .padding(20)
+                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            }
+        }
+        .animation(.easeOut(duration: 0.16), value: showsVoiceRemovalPrompt)
+        .onChange(of: controller.selectedSegmentID) { oldValue, newValue in
+            if oldValue != newValue, let newValue {
+                bypassedVoiceRemovalSegmentIDs.remove(newValue)
+            }
+        }
+    }
+
+    private var dubbingForm: some View {
         Form {
             if let segment = controller.selectedSegment {
                 Section("Current Line") {
@@ -69,27 +90,19 @@ private struct DubbingInspectorView: View {
                 Section("Record") {
                     RecordingActionButton(controller: controller)
                         .frame(maxWidth: .infinity)
-                }
-
-                Section("Choose Take") {
-                    if segment.takes.isEmpty {
-                        Text("Record a take, or choose Original below to keep this line unchanged.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Picker("Selected take", selection: selectedTakeID) {
-                            ForEach(Array(segment.takes.enumerated()), id: \.element.id) { index, take in
-                                Text("Take \(index + 1) · \(TimeFormatter.playbackTime(take.duration))")
-                                    .tag(Optional(take.id))
-                            }
-                        }
-
-                        ForEach(Array(segment.takes.enumerated()), id: \.element.id) { index, take in
-                            takeRow(take, number: index + 1, selectedID: segment.selectedTakeID)
+                    if controller.cleaningSegmentID == segment.id {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(controller.sourceSeparation.isBusy
+                                 ? controller.sourceSeparation.message
+                                 : "Preparing audio for voice removal…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
                     }
                 }
-                .disabled(controller.recording.isActive)
 
                 Section("Audition Result") {
                     Picker("Result", selection: $controller.segmentPreviewMode) {
@@ -134,6 +147,26 @@ private struct DubbingInspectorView: View {
                     }
                 }
 
+                Section("Choose Take") {
+                    if segment.takes.isEmpty {
+                        Text("Record a take, or choose Original above to keep this line unchanged.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Picker("Selected take", selection: selectedTakeID) {
+                            ForEach(Array(segment.takes.enumerated()), id: \.element.id) { index, take in
+                                Text("Take \(index + 1) · \(TimeFormatter.playbackTime(take.duration))")
+                                    .tag(Optional(take.id))
+                            }
+                        }
+
+                        ForEach(Array(segment.takes.enumerated()), id: \.element.id) { index, take in
+                            takeRow(take, number: index + 1, selectedID: segment.selectedTakeID)
+                        }
+                    }
+                }
+                .disabled(controller.recording.isActive)
+
                 Section {
                     Button {
                         controller.acceptSelectedVersionAndAdvance()
@@ -171,6 +204,65 @@ private struct DubbingInspectorView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var showsVoiceRemovalPrompt: Bool {
+        guard let segment = controller.selectedSegment else { return false }
+        return !controller.hasCleanBackgroundForSelectedTrack(segment)
+            && !bypassedVoiceRemovalSegmentIDs.contains(segment.id)
+    }
+
+    private func voiceRemovalPrompt(_ segment: DubSegment) -> some View {
+        VStack(spacing: 14) {
+            Image(systemName: "waveform.badge.minus")
+                .font(.system(size: 30, weight: .medium))
+                .foregroundStyle(.tint)
+
+            VStack(spacing: 5) {
+                Text("Remove the Original Voice?")
+                    .font(.headline)
+                Text("Prepare a cleaner background for this line before recording. This runs locally and may take some time.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            if controller.cleaningSegmentID != nil {
+                Text("Another line is already being cleaned in the background. You can continue recording this line now.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Button("Continue Recording") {
+                    bypassedVoiceRemovalSegmentIDs.insert(segment.id)
+                }
+                .buttonStyle(.borderedProminent)
+            } else {
+                Button {
+                    if controller.prepareCleanBackground() {
+                        bypassedVoiceRemovalSegmentIDs.insert(segment.id)
+                    }
+                } label: {
+                    Label("Remove Original Voice", systemImage: "sparkles")
+                        .frame(maxWidth: .infinity, minHeight: 24)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+
+                Button("Continue Without Cleaning") {
+                    bypassedVoiceRemovalSegmentIDs.insert(segment.id)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: 300)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(.separator.opacity(0.7), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.14), radius: 18, y: 8)
     }
 
     private func takeRow(_ take: RecordingTake, number: Int, selectedID: UUID?) -> some View {
@@ -215,7 +307,7 @@ private struct DubbingInspectorView: View {
     }
 
     private func canPreview(_ segment: DubSegment) -> Bool {
-        guard !controller.recording.isActive, !controller.sourceSeparation.isBusy else { return false }
+        guard !controller.recording.isActive else { return false }
         if controller.segmentPreviewMode != .original, segment.selectedTakeID == nil { return false }
         if controller.segmentPreviewMode == .cleanDub {
             return controller.hasCleanBackgroundForSelectedTrack(segment)
@@ -264,10 +356,17 @@ private struct DubbingInspectorView: View {
 
     @ViewBuilder
     private func voiceRemovalControl(_ segment: DubSegment) -> some View {
-        if controller.sourceSeparation.isBusy {
-            ProgressView(value: controller.sourceSeparation.progress) {
-                Text(controller.sourceSeparation.message)
+        if controller.cleaningSegmentID == segment.id {
+            if controller.sourceSeparation.isBusy {
+                ProgressView(value: controller.sourceSeparation.progress) {
+                    Text(controller.sourceSeparation.message)
+                        .lineLimit(2)
+                }
+            } else {
+                ProgressView {
+                    Text("Preparing movie audio…")
                     .lineLimit(2)
+                }
             }
             Button("Cancel", role: .cancel) {
                 controller.cancelSourceSeparation()
@@ -289,7 +388,7 @@ private struct DubbingInspectorView: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(controller.sourceSeparation.state == .checking)
+            .disabled(controller.sourceSeparation.state == .checking || controller.cleaningSegmentID != nil)
         }
     }
 
