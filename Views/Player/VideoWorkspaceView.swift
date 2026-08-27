@@ -81,54 +81,56 @@ private struct PlaybackControls: View {
             Slider(value: playbackPosition, in: 0...max(playback.duration, 0.01))
                 .disabled(playback.duration <= 0)
 
-            HStack(spacing: 18) {
-                Text(TimeFormatter.playbackTime(playback.currentTime))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .frame(width: 64, alignment: .leading)
+            ZStack {
+                HStack(spacing: 12) {
+                    Text(TimeFormatter.playbackTime(playback.currentTime))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 64, alignment: .leading)
 
-                Spacer()
+                    Spacer()
 
-                Button {
-                    controller.skipMainPlayback(by: -5)
-                } label: {
-                    Image(systemName: "gobackward.5")
-                }
-                .help("Back 5 Seconds")
-
-                Button {
-                    controller.toggleMainPlayback()
-                } label: {
-                    Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
-                        .frame(width: 22, height: 22)
-                }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.space, modifiers: [])
-                .help(playback.isPlaying ? "Pause" : "Play")
-
-                Button {
-                    controller.skipMainPlayback(by: 5)
-                } label: {
-                    Image(systemName: "goforward.5")
-                }
-                .help("Forward 5 Seconds")
-
-                Spacer()
-
-                Picker("Playback", selection: $controller.mainPlaybackMode) {
-                    ForEach(ProjectController.MainPlaybackMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
+                    Picker("Playback", selection: $controller.mainPlaybackMode) {
+                        ForEach(ProjectController.MainPlaybackMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
                     }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(width: 150)
-                .help("Choose whether the main player uses source audio or accepted line versions")
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 150)
+                    .help("Choose whether the main player uses source audio or accepted line versions")
 
-                Text(TimeFormatter.playbackTime(playback.duration))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .frame(width: 64, alignment: .trailing)
+                    Text(TimeFormatter.playbackTime(playback.duration))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 64, alignment: .trailing)
+                }
+
+                HStack(spacing: 18) {
+                    Button {
+                        controller.skipMainPlayback(by: -5)
+                    } label: {
+                        Image(systemName: "gobackward.5")
+                    }
+                    .help("Back 5 Seconds")
+
+                    Button {
+                        controller.toggleMainPlayback()
+                    } label: {
+                        Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
+                            .frame(width: 22, height: 22)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.space, modifiers: [])
+                    .help(playback.isPlaying ? "Pause" : "Play")
+
+                    Button {
+                        controller.skipMainPlayback(by: 5)
+                    } label: {
+                        Image(systemName: "goforward.5")
+                    }
+                    .help("Forward 5 Seconds")
+                }
             }
             .buttonStyle(.plain)
         }
