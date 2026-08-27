@@ -44,6 +44,7 @@ final class WaveformController {
                 async let recorded: [Float] = loadTake(
                     url: takeURL,
                     take: take,
+                    segment: segment,
                     cacheRoot: cacheRoot
                 )
                 let (originalResult, takeResult) = try await (original, recorded)
@@ -71,21 +72,26 @@ final class WaveformController {
             from: url,
             audioTrackIndex: audioTrackIndex,
             timeRange: segment.startTime..<segment.endTime,
-            sampleCount: 240,
+            sampleCount: 600,
             cacheURL: cacheRoot.appending(
-                path: "original/\(audioTrackID ?? "default")-\(segment.id.uuidString)-240.json"
+                path: "original/\(audioTrackID ?? "default")-\(segment.id.uuidString)-absolute-600.json"
             )
         )
     }
 
-    private func loadTake(url: URL?, take: RecordingTake?, cacheRoot: URL) async throws -> [Float] {
+    private func loadTake(
+        url: URL?,
+        take: RecordingTake?,
+        segment: DubSegment,
+        cacheRoot: URL
+    ) async throws -> [Float] {
         guard let url, let take else { return [] }
         return try await service.samples(
             from: url,
             audioTrackIndex: 0,
-            timeRange: 0..<max(take.duration, 0.01),
-            sampleCount: 240,
-            cacheURL: cacheRoot.appending(path: "takes/\(take.id.uuidString)-240.json")
+            timeRange: 0..<max(segment.duration, 0.01),
+            sampleCount: 600,
+            cacheURL: cacheRoot.appending(path: "takes/\(take.id.uuidString)-aligned-absolute-600.json")
         )
     }
 }

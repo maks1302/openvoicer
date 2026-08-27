@@ -103,8 +103,7 @@ actor WaveformService {
         guard reader.status == .completed else {
             throw reader.error ?? WaveformError.couldNotReadAudio
         }
-        guard let maximum = peaks.max(), maximum > 0 else { return peaks }
-        return peaks.map { sqrt($0 / maximum) }
+        return peaks
     }
 }
 

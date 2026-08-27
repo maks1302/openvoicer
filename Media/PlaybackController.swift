@@ -17,7 +17,7 @@ final class PlaybackController {
 
     init() {
         periodicTimeObserver = player.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 0.1, preferredTimescale: 600),
+            forInterval: CMTime(seconds: 1.0 / 30.0, preferredTimescale: 600),
             queue: .main
         ) { [weak self] time in
             MainActor.assumeIsolated {

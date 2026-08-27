@@ -2,11 +2,12 @@ import SwiftUI
 
 struct RecordingPanelView: View {
     @Bindable var controller: ProjectController
+    @State private var waveformLayout: WaveformLayoutMode = .tracks
 
     var body: some View {
         if let segment = controller.selectedSegment {
             VStack(spacing: 12) {
-                waveformStack
+                waveformTimeline(segment)
 
                 if !segment.takes.isEmpty {
                     takeStrip(segment)
@@ -38,41 +39,38 @@ struct RecordingPanelView: View {
         }
     }
 
-    private var waveformStack: some View {
-        VStack(spacing: 5) {
-            waveformRow(label: "Original", samples: controller.waveforms.originalSamples, color: .secondary)
-            waveformRow(label: "Take", samples: controller.waveforms.takeSamples, color: .accentColor)
-        }
-        .overlay(alignment: .trailing) {
-            if controller.waveforms.isLoading {
-                ProgressView()
-                    .controlSize(.mini)
-                    .padding(.trailing, 4)
-            }
-        }
+    private func waveformTimeline(_ segment: DubSegment) -> some View {
+        DubbingWaveformTimelineView(
+            originalSamples: controller.waveforms.originalSamples,
+            takeSamples: controller.recording.isActive
+                ? controller.recording.liveWaveformSamples
+                : controller.waveforms.takeSamples,
+            duration: segment.duration,
+            playheadFraction: playheadFraction(for: segment),
+            playheadTime: playheadTime(for: segment),
+            isPlayheadActive: controller.playback.isPlaying
+                || controller.recording.playingTakeID != nil
+                || controller.recording.isRecording,
+            isRecording: controller.recording.isRecording,
+            isLoading: controller.waveforms.isLoading,
+            layoutMode: $waveformLayout,
+            onSeek: controller.seekWithinSelectedSegment(to:)
+        )
     }
 
-    private func waveformRow(label: String, samples: [Float], color: Color) -> some View {
-        HStack(spacing: 9) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 48, alignment: .trailing)
-            ZStack {
-                Capsule()
-                    .fill(.secondary.opacity(0.08))
-                if samples.isEmpty {
-                    Rectangle()
-                        .fill(.secondary.opacity(0.22))
-                        .frame(height: 1)
-                        .padding(.horizontal, 5)
-                } else {
-                    WaveformView(samples: samples, color: color)
-                        .padding(.horizontal, 4)
-                }
-            }
-            .frame(height: 27)
+    private func playheadTime(for segment: DubSegment) -> TimeInterval {
+        if controller.recording.isActive {
+            return min(controller.recording.recordingElapsed, segment.duration)
         }
+        if controller.recording.playingTakeID != nil {
+            return min(controller.recording.takePlaybackElapsed, segment.duration)
+        }
+        return min(max(controller.playback.currentTime - segment.startTime, 0), segment.duration)
+    }
+
+    private func playheadFraction(for segment: DubSegment) -> Double {
+        guard segment.duration > 0 else { return 0 }
+        return playheadTime(for: segment) / segment.duration
     }
 
     private func previewControls(_ segment: DubSegment) -> some View {

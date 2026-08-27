@@ -16,12 +16,12 @@ final class AudioRecorder: NSObject, @unchecked Sendable {
     private var destinationURL: URL?
     private var firstSampleTime: CMTime?
     private var lastSampleTime: CMTime?
-    private var meterHandler: (@Sendable (Float) -> Void)?
+    private var meterHandler: (@Sendable (Float, TimeInterval) -> Void)?
 
     func start(
         destinationURL: URL,
         deviceID: String?,
-        meterHandler: @escaping @Sendable (Float) -> Void
+        meterHandler: @escaping @Sendable (Float, TimeInterval) -> Void
     ) async throws {
         try await withCheckedThrowingContinuation { continuation in
             queue.async { [self] in
@@ -88,7 +88,7 @@ final class AudioRecorder: NSObject, @unchecked Sendable {
     private func configureAndStart(
         destinationURL: URL,
         deviceID: String?,
-        meterHandler: @escaping @Sendable (Float) -> Void
+        meterHandler: @escaping @Sendable (Float, TimeInterval) -> Void
     ) throws {
         guard session == nil else { throw AudioRecorderError.alreadyRecording }
         guard let device = AudioDeviceManager.captureDevice(withID: deviceID) else {
@@ -170,7 +170,12 @@ extension AudioRecorder: AVCaptureAudioDataOutputSampleBufferDelegate {
 
         let decibels = connection.audioChannels.map(\.averagePowerLevel).max() ?? -160
         let normalizedLevel = min(max(pow(10, decibels / 20), 0), 1)
-        meterHandler?(normalizedLevel)
+        let elapsed = max(
+            0,
+            CMTimeGetSeconds(lastSampleTime ?? presentationTime)
+                - CMTimeGetSeconds(firstSampleTime ?? presentationTime)
+        )
+        meterHandler?(normalizedLevel, elapsed)
     }
 
     private func sampleDuration(for sampleBuffer: CMSampleBuffer) -> CMTime {

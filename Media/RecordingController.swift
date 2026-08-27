@@ -15,17 +15,27 @@ final class RecordingController {
     private(set) var inputLevel: Float = 0
     private(set) var isClipping = false
     private(set) var playingTakeID: UUID?
+    private(set) var liveWaveformSamples: [Float] = []
+    private(set) var recordingElapsed: TimeInterval = 0
+    private(set) var recordingTimelineDuration: TimeInterval = 1
+    private(set) var takePlaybackElapsed: TimeInterval = 0
     let devices = AudioDeviceManager()
 
     @ObservationIgnored private let recorder = AudioRecorder()
     @ObservationIgnored private var audioPlayer: AVAudioPlayer?
     @ObservationIgnored private var backgroundPlayer: AVAudioPlayer?
     @ObservationIgnored private var playbackCompletionTask: Task<Void, Never>?
+    @ObservationIgnored private var lastLiveSampleIndex = 0
 
     var isActive: Bool { state != .idle }
     var isRecording: Bool { state == .recording }
 
-    func begin(destinationURL: URL, deviceID: String?, countdownSeconds: Int) async throws {
+    func begin(
+        destinationURL: URL,
+        deviceID: String?,
+        countdownSeconds: Int,
+        timelineDuration: TimeInterval
+    ) async throws {
         guard state == .idle else { return }
         stopTakePlayback()
 
@@ -33,6 +43,10 @@ final class RecordingController {
             throw AudioRecorderError.permissionDenied
         }
         devices.refresh()
+        recordingTimelineDuration = max(timelineDuration, 0.1)
+        recordingElapsed = 0
+        liveWaveformSamples = Array(repeating: 0, count: 600)
+        lastLiveSampleIndex = 0
 
         do {
             if countdownSeconds > 0 {
@@ -44,10 +58,11 @@ final class RecordingController {
 
             try Task.checkCancellation()
             state = .recording
-            try await recorder.start(destinationURL: destinationURL, deviceID: deviceID) { [weak self] level in
+            try await recorder.start(destinationURL: destinationURL, deviceID: deviceID) { [weak self] level, elapsed in
                 Task { @MainActor in
                     self?.inputLevel = level
                     self?.isClipping = level >= 0.98
+                    self?.appendLiveSample(level, at: elapsed)
                 }
             }
         } catch {
@@ -72,9 +87,12 @@ final class RecordingController {
         state = .idle
         inputLevel = 0
         isClipping = false
+        recordingElapsed = 0
+        liveWaveformSamples = []
+        lastLiveSampleIndex = 0
     }
 
-    func playTake(id: UUID, at url: URL, gain: Float) throws {
+    func playTake(id: UUID, at url: URL, gain: Float, timelineDuration: TimeInterval? = nil) throws {
         stopTakePlayback()
         let player = try AVAudioPlayer(contentsOf: url)
         player.volume = min(max(gain, 0), 1)
@@ -82,13 +100,19 @@ final class RecordingController {
         guard player.play() else { throw RecordingPlaybackError.couldNotPlay }
         audioPlayer = player
         playingTakeID = id
+        takePlaybackElapsed = 0
         playbackCompletionTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: .seconds(player.duration))
-                guard !Task.isCancelled, self?.playingTakeID == id else { return }
-                self?.audioPlayer = nil
-                self?.playingTakeID = nil
-            } catch { }
+            while !Task.isCancelled, player.isPlaying {
+                self?.takePlaybackElapsed = min(
+                    player.currentTime,
+                    timelineDuration ?? player.duration
+                )
+                try? await Task.sleep(for: .milliseconds(33))
+            }
+            guard !Task.isCancelled, self?.playingTakeID == id else { return }
+            self?.audioPlayer = nil
+            self?.playingTakeID = nil
+            self?.takePlaybackElapsed = 0
         }
     }
 
@@ -133,6 +157,24 @@ final class RecordingController {
         audioPlayer = nil
         backgroundPlayer = nil
         playingTakeID = nil
+        takePlaybackElapsed = 0
+    }
+
+    private func appendLiveSample(_ level: Float, at elapsed: TimeInterval) {
+        recordingElapsed = elapsed
+        guard !liveWaveformSamples.isEmpty else { return }
+        let fraction = min(max(elapsed / recordingTimelineDuration, 0), 1)
+        let index = min(Int(fraction * Double(liveWaveformSamples.count)), liveWaveformSamples.count - 1)
+        var samples = liveWaveformSamples
+        if index >= lastLiveSampleIndex {
+            for sampleIndex in lastLiveSampleIndex...index {
+                samples[sampleIndex] = max(samples[sampleIndex], level)
+            }
+        } else {
+            samples[index] = max(samples[index], level)
+        }
+        lastLiveSampleIndex = index
+        liveWaveformSamples = samples
     }
 
     private func requestMicrophoneAccess() async -> Bool {

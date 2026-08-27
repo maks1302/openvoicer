@@ -176,6 +176,12 @@ final class ProjectController {
         )
     }
 
+    func seekWithinSelectedSegment(to fraction: Double) {
+        guard let segment = selectedSegment, !recording.isActive else { return }
+        let clamped = min(max(fraction, 0), 1)
+        playback.seek(to: segment.startTime + segment.duration * clamped)
+    }
+
     func previewSelectedSegment(mode: SegmentPreviewMode? = nil) {
         guard let segment = selectedSegment, let project else { return }
         let mode = mode ?? segmentPreviewMode
@@ -219,7 +225,12 @@ final class ProjectController {
                         backgroundGain: project.settings.cleanBackgroundVolume
                     )
                 } else {
-                    try recording.playTake(id: take.id, at: url, gain: take.gain)
+                    try recording.playTake(
+                        id: take.id,
+                        at: url,
+                        gain: take.gain,
+                        timelineDuration: segment.duration
+                    )
                 }
             } catch {
                 present(error, fallback: "The selected recording could not be played.")
@@ -401,7 +412,12 @@ final class ProjectController {
               let url = recordingURL(for: take) else { return }
         do {
             playback.pause()
-            try recording.playTake(id: take.id, at: url, gain: take.gain)
+            try recording.playTake(
+                id: take.id,
+                at: url,
+                gain: take.gain,
+                timelineDuration: segment.duration
+            )
         } catch {
             present(error, fallback: "The selected recording could not be played.")
         }
@@ -715,7 +731,8 @@ final class ProjectController {
                 try await recording.begin(
                     destinationURL: destination,
                     deviceID: project.settings.selectedInputDeviceID,
-                    countdownSeconds: project.settings.recordingCountdownSeconds
+                    countdownSeconds: project.settings.recordingCountdownSeconds,
+                    timelineDuration: segment.duration
                 )
                 guard !Task.isCancelled else {
                     recording.cancel()
