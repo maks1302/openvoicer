@@ -1,10 +1,49 @@
 import SwiftUI
 
+enum WorkspaceInspectorSection: String, CaseIterable, Identifiable {
+    case dubbing
+    case microphone
+    case dialogue
+    case audio
+    case project
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .dubbing: "Dubbing"
+        case .microphone: "Microphone"
+        case .dialogue: "Dialogue"
+        case .audio: "Audio"
+        case .project: "Project"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .dubbing: "mic.badge.plus"
+        case .microphone: "mic"
+        case .dialogue: "captions.bubble"
+        case .audio: "waveform.badge.minus"
+        case .project: "info.circle"
+        }
+    }
+
+    var selectedSymbol: String {
+        switch self {
+        case .dubbing: "mic.badge.plus"
+        case .microphone: "mic.fill"
+        case .dialogue: "captions.bubble.fill"
+        case .audio: "waveform.badge.minus"
+        case .project: "info.circle.fill"
+        }
+    }
+}
+
 struct ProjectView: View {
     @Bindable var controller: ProjectController
-    @State private var isShowingInspector = false
-    @State private var isShowingMicrophoneSettings = false
-    @State private var isShowingCleaningSettings = false
+    @State private var isShowingInspector = true
+    @State private var inspectorSection: WorkspaceInspectorSection = .dubbing
 
     var body: some View {
         HSplitView {
@@ -16,180 +55,32 @@ struct ProjectView: View {
         }
         .navigationTitle(controller.project?.name ?? "DubLab")
         .toolbar {
-            ToolbarItemGroup {
-                Button {
-                    controller.showVideoImportPanel()
-                } label: {
-                    Label(
-                        controller.project?.sourceVideo == nil ? "Import Video" : "Replace Video",
-                        systemImage: "film.stack"
-                    )
+            ToolbarItemGroup(placement: .primaryAction) {
+                ForEach(WorkspaceInspectorSection.allCases) { section in
+                    inspectorButton(section)
                 }
-
-                SubtitleImportMenu(controller: controller)
-
-                SourceAudioTrackMenu(controller: controller)
-
-                Button {
-                    isShowingMicrophoneSettings.toggle()
-                } label: {
-                    Label("Microphone Settings", systemImage: "mic")
-                }
-                .help("Microphone Settings")
-                .popover(isPresented: $isShowingMicrophoneSettings, arrowEdge: .bottom) {
-                    MicrophoneSettingsView(controller: controller)
-                }
-
-                Button {
-                    isShowingCleaningSettings.toggle()
-                } label: {
-                    Label("Dialogue Cleaning", systemImage: "waveform.badge.minus")
-                }
-                .help("Dialogue Cleaning")
-                .popover(isPresented: $isShowingCleaningSettings, arrowEdge: .bottom) {
-                    AudioCleaningSettingsView(controller: controller)
-                }
-
-                Button {
-                    isShowingInspector.toggle()
-                } label: {
-                    Label("Project Info", systemImage: "info.circle")
-                }
-
             }
         }
         .inspector(isPresented: $isShowingInspector) {
-            ProjectInspectorView(controller: controller)
-                .inspectorColumnWidth(min: 240, ideal: 280, max: 340)
+            WorkspaceInspectorView(section: inspectorSection, controller: controller)
+                .inspectorColumnWidth(min: 285, ideal: 320, max: 390)
         }
     }
-}
 
-private struct ProjectInspectorView: View {
-    let controller: ProjectController
+    private func inspectorButton(_ section: WorkspaceInspectorSection) -> some View {
+        let isSelected = isShowingInspector && inspectorSection == section
 
-    var body: some View {
-        Form {
-            if let source = controller.project?.sourceVideo {
-                Section("Source Video") {
-                    LabeledContent("File", value: source.displayName)
-                    LabeledContent("Duration", value: TimeFormatter.playbackTime(source.metadata.duration))
-                    LabeledContent("Resolution", value: "\(source.metadata.width) × \(source.metadata.height)")
-                    if let frameRate = source.metadata.frameRate {
-                        LabeledContent(
-                            "Frame rate",
-                            value: frameRate.formatted(.number.precision(.fractionLength(0...2))) + " fps"
-                        )
-                    }
-                    if let codec = source.metadata.videoCodec {
-                        LabeledContent("Video codec", value: codec.uppercased())
-                    }
-                }
-
-                if !source.metadata.audioTracks.isEmpty {
-                    Section("Audio") {
-                        ForEach(source.metadata.audioTracks) { track in
-                            LabeledContent {
-                                Text(audioDescription(track))
-                            } label: {
-                                HStack(spacing: 5) {
-                                    if track.id == controller.selectedAudioTrack?.id {
-                                        Image(systemName: "checkmark")
-                                            .foregroundStyle(.tint)
-                                    }
-                                    Text(track.title)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if let subtitleSource = controller.project?.subtitleSource {
-                Section("Dialogue") {
-                    LabeledContent("Source", value: subtitleSource.displayName)
-                    LabeledContent("Segments", value: controller.project?.segments.count.formatted() ?? "0")
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .padding(.top, 8)
-    }
-
-    private func audioDescription(_ track: AudioTrackMetadata) -> String {
-        [
-            track.codec?.uppercased(),
-            track.channelCount.map { "\($0) ch" },
-            track.languageCode?.uppercased()
-        ]
-        .compactMap { $0 }
-        .joined(separator: " · ")
-    }
-}
-
-private struct SourceAudioTrackMenu: View {
-    @Bindable var controller: ProjectController
-
-    var body: some View {
-        Menu {
-            if let tracks = controller.project?.sourceVideo?.metadata.audioTracks {
-                ForEach(tracks) { track in
-                    Button {
-                        controller.updateSelectedAudioTrack(track.id)
-                    } label: {
-                        if track.id == controller.selectedAudioTrack?.id {
-                            Label(trackLabel(track), systemImage: "checkmark")
-                        } else {
-                            Text(trackLabel(track))
-                        }
-                    }
-                }
+        return Button {
+            if isSelected {
+                isShowingInspector = false
+            } else {
+                inspectorSection = section
+                isShowingInspector = true
             }
         } label: {
-            Label("Source Audio", systemImage: "speaker.wave.2")
+            Label(section.title, systemImage: isSelected ? section.selectedSymbol : section.symbol)
+                .foregroundStyle(isSelected ? Color.accentColor : .primary)
         }
-        .help("Choose the movie audio track used for playback, waveforms, and dialogue cleaning")
-        .disabled(controller.project?.sourceVideo?.metadata.audioTracks.isEmpty != false)
-    }
-
-    private func trackLabel(_ track: AudioTrackMetadata) -> String {
-        var parts = [track.title]
-        if let language = track.languageCode, !language.isEmpty {
-            parts.append(language.uppercased())
-        }
-        if let channels = track.channelCount {
-            parts.append("\(channels) ch")
-        }
-        if let codec = track.codec, !codec.isEmpty {
-            parts.append(codec.uppercased())
-        }
-        return parts.joined(separator: " · ")
-    }
-}
-
-private struct SubtitleImportMenu: View {
-    let controller: ProjectController
-
-    var body: some View {
-        Menu {
-            Button("Import SRT or WebVTT…") {
-                controller.showSubtitleImportPanel()
-            }
-
-            if !controller.embeddedSubtitleTracks.isEmpty {
-                Divider()
-                Section("Embedded in Video") {
-                    ForEach(controller.embeddedSubtitleTracks) { track in
-                        Button(track.displayName) {
-                            controller.importEmbeddedSubtitleTrack(track)
-                        }
-                        .disabled(!track.isTextBased)
-                    }
-                }
-            }
-        } label: {
-            Label("Subtitles", systemImage: "captions.bubble")
-        }
-        .disabled(controller.project?.sourceVideo == nil || controller.isLoadingSubtitles)
+        .help(isSelected ? "Hide \(section.title) Inspector" : "Show \(section.title) Inspector")
     }
 }
