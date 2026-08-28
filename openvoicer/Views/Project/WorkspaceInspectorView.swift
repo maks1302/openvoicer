@@ -716,7 +716,7 @@ private struct ProjectInspectorView: View {
 
             Section("Privacy") {
                 Label("Media stays on this Mac", systemImage: "lock.shield")
-                Text("DubLab does not upload your movie or recordings.")
+                Text("OpenVoicer does not upload your movie or recordings.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

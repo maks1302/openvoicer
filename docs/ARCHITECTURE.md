@@ -1,10 +1,10 @@
-# DubLab architecture
+# OpenVoicer architecture
 
 This document describes the current implementation, its boundaries, and the constraints that should guide future changes.
 
 ## Design goals
 
-DubLab is designed around five technical priorities:
+OpenVoicer is designed around five technical priorities:
 
 1. Keep user media local and avoid backend infrastructure.
 2. Remain responsive with feature-length source files.
@@ -32,7 +32,7 @@ flowchart LR
     FF --> FFmpeg
     PB --> AVP[AVPlayer]
     RC --> AVA[AVAudioEngine / AVAudioPlayer]
-    PS --> Package[.dublab package]
+    PS --> Package[.openvoicer package]
 ```
 
 `ProjectController` is currently the orchestration boundary. It coordinates focused services but does not contain subtitle parsing, process execution, recording internals, or serialization implementations.
@@ -76,7 +76,7 @@ Segments store source-movie timestamps, not proxy-relative timestamps. This is f
 
 The original source is represented by `SourceVideoReference`, which contains metadata, a last-known path for diagnostics, and a security-scoped bookmark.
 
-AVFoundation cannot reliably open Matroska containers. For MKV sources, DubLab asks FFmpeg to create a MOV playback asset:
+AVFoundation cannot reliably open Matroska containers. For MKV sources, OpenVoicer asks FFmpeg to create a MOV playback asset:
 
 - Full-movie project: stream-copy the complete playable movie into `temp/source-playback.mov`.
 - Clip project: seek through the Matroska index and copy only the selected range.
@@ -164,7 +164,7 @@ Generated assets should be replaceable caches whenever possible. User recordings
 
 Use `Logger` categories for project, video, audio, recording, subtitles, export, and FFmpeg behavior. User-facing errors should explain the failed action; detailed process output belongs in project logs such as `temp/ffmpeg-remux.log` or `temp/export.log`.
 
-Do not use `print()` for production diagnostics and do not expose full user paths in telemetry. DubLab currently has no telemetry.
+Do not use `print()` for production diagnostics and do not expose full user paths in telemetry. OpenVoicer currently has no telemetry.
 
 ## Extension points
 

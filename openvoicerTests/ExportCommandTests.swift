@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import DubLabExport
+@testable import OpenVoicerExport
 
 struct ExportCommandTests {
     @Test func finishedMovieCopiesVideoAndMapsMixedAudio() {

@@ -138,7 +138,7 @@ struct NewProjectAssistantView: View {
                     clipRangeEditor(draft)
 
                     LabeledContent("Clip duration", value: TimeFormatter.playbackTime(draft.selectedDuration))
-                    Text("DubLab processes only this range, plus three seconds of hidden context at each edge.")
+                    Text("OpenVoicer processes only this range, plus three seconds of hidden context at each edge.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {

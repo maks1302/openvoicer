@@ -15,7 +15,7 @@ protocol ExportService: Sendable {
 }
 
 actor FFmpegExportService: ExportService {
-    private let logger = Logger(subsystem: "com.dublab.app", category: "export")
+    private let logger = Logger(subsystem: "com.openvoicer.app", category: "export")
     private var activeProcess: Process?
 
     func render(

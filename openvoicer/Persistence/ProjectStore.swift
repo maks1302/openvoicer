@@ -4,7 +4,7 @@ import OSLog
 actor ProjectStore {
     static let projectFileName = "project.json"
 
-    private let logger = Logger(subsystem: "com.dublab.app", category: "project")
+    private let logger = Logger(subsystem: "com.openvoicer.app", category: "project")
     private let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -71,7 +71,7 @@ enum ProjectStoreError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unsupportedSchema(let version):
-            "This project uses schema version \(version), which this version of DubLab cannot open."
+            "This project uses schema version \(version), which this version of OpenVoicer cannot open."
         }
     }
 }

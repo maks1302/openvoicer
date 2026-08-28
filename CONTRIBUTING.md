@@ -1,8 +1,8 @@
-# Contributing to DubLab
+# Contributing to OpenVoicer
 
 Thanks for helping build a private, native dubbing tool for macOS.
 
-DubLab is still early, so focused improvements are more useful than broad rewrites. A good contribution keeps the app compiling, preserves project compatibility, and improves one understandable part of the dubbing workflow.
+OpenVoicer is still early, so focused improvements are more useful than broad rewrites. A good contribution keeps the app compiling, preserves project compatibility, and improves one understandable part of the dubbing workflow.
 
 ## Before contributing
 
@@ -78,7 +78,7 @@ Tests are especially valuable for:
 For media regressions, include the smallest freely distributable reproduction possible. If that is not possible, include:
 
 - `ffprobe -show_format -show_streams` output with private paths removed;
-- the relevant DubLab/FFmpeg log excerpt;
+- the relevant OpenVoicer/FFmpeg log excerpt;
 - macOS, architecture, Xcode, and FFmpeg versions;
 - exact project scope and selected audio/subtitle track;
 - expected and observed behavior.

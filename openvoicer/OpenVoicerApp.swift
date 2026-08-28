@@ -8,7 +8,7 @@
 import SwiftUI
 
 @main
-struct DubLabApp: App {
+struct OpenVoicerApp: App {
     @State private var projectController = ProjectController()
 
     var body: some Scene {

@@ -1,5 +1,5 @@
 import Testing
-@testable import DubLabSubtitles
+@testable import OpenVoicerSubtitles
 
 struct SubtitleParserTests {
     @Test func parsesSRTMultilineFormattingAndOverlap() throws {

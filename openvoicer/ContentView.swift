@@ -39,7 +39,7 @@ struct ContentView: View {
         }) { _ in
             NewProjectAssistantView(controller: controller)
         }
-        .alert("DubLab", isPresented: errorIsPresented) {
+        .alert("OpenVoicer", isPresented: errorIsPresented) {
             Button("OK", role: .cancel) {
                 controller.errorMessage = nil
             }

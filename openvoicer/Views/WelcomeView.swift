@@ -44,7 +44,7 @@ struct WelcomeView: View {
                 .symbolRenderingMode(.hierarchical)
 
             VStack(spacing: 7) {
-                Text("DubLab")
+                Text("OpenVoicer")
                     .font(.largeTitle.weight(.semibold))
                 Text("Create a local dubbing project from any movie.")
                     .font(.title3)

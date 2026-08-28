@@ -4,7 +4,7 @@ import Foundation
 import OSLog
 
 struct VideoMetadataLoader {
-    private let logger = Logger(subsystem: "com.dublab.app", category: "video")
+    private let logger = Logger(subsystem: "com.openvoicer.app", category: "video")
 
     func load(from url: URL) async throws -> VideoMetadata {
         let asset = AVURLAsset(url: url)

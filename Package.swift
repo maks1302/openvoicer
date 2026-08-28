@@ -3,30 +3,30 @@
 import PackageDescription
 
 let package = Package(
-    name: "DubLab",
+    name: "OpenVoicer",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "DubLabSubtitles", targets: ["DubLabSubtitles"]),
-        .library(name: "DubLabModels", targets: ["DubLabModels"]),
-        .library(name: "DubLabExport", targets: ["DubLabExport"])
+        .library(name: "OpenVoicerSubtitles", targets: ["OpenVoicerSubtitles"]),
+        .library(name: "OpenVoicerModels", targets: ["OpenVoicerModels"]),
+        .library(name: "OpenVoicerExport", targets: ["OpenVoicerExport"])
     ],
     targets: [
         .target(
-            name: "DubLabSubtitles",
+            name: "OpenVoicerSubtitles",
             path: "openvoicer/Subtitles"
         ),
         .target(
-            name: "DubLabModels",
+            name: "OpenVoicerModels",
             path: "openvoicer/Models"
         ),
         .target(
-            name: "DubLabExport",
+            name: "OpenVoicerExport",
             path: "openvoicer/Export",
             exclude: ["ExportController.swift"]
         ),
         .testTarget(
-            name: "DubLabSubtitlesTests",
-            dependencies: ["DubLabSubtitles", "DubLabModels", "DubLabExport"],
+            name: "OpenVoicerSubtitlesTests",
+            dependencies: ["OpenVoicerSubtitles", "OpenVoicerModels", "OpenVoicerExport"],
             path: "openvoicerTests"
         )
     ]

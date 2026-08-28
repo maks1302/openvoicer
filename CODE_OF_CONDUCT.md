@@ -1,6 +1,6 @@
 # Code of conduct
 
-DubLab is committed to a welcoming, respectful, and harassment-free community for everyone, regardless of background, identity, experience level, or personal circumstances.
+OpenVoicer is committed to a welcoming, respectful, and harassment-free community for everyone, regardless of background, identity, experience level, or personal circumstances.
 
 ## Expected behavior
 
@@ -22,7 +22,7 @@ DubLab is committed to a welcoming, respectful, and harassment-free community fo
 
 ## Scope
 
-This policy applies in project repositories, issues, pull requests, discussions, and other spaces where someone is representing the DubLab community.
+This policy applies in project repositories, issues, pull requests, discussions, and other spaces where someone is representing the OpenVoicer community.
 
 ## Enforcement
 

@@ -1,11 +1,11 @@
-# DubLab project format
+# OpenVoicer project format
 
-DubLab projects use the `.dublab` extension and are macOS packages backed by ordinary files and folders. This keeps projects inspectable, backup-friendly, and recoverable without introducing a database.
+OpenVoicer projects use the `.openvoicer` extension and are macOS packages backed by ordinary files and folders. This keeps projects inspectable, backup-friendly, and recoverable without introducing a database.
 
 ## Layout
 
 ```text
-Example.dublab/
+Example.openvoicer/
 ├── project.json
 ├── recordings/
 │   └── <segment UUID>/
@@ -62,7 +62,7 @@ The JSON document contains:
 
 Times are represented as `TimeInterval` seconds on the original source-movie timeline. A clip from `00:40:00` to `00:42:00` therefore contains segment timestamps near 2400 seconds rather than resetting them to zero. The UI can display clip-relative time without changing persisted synchronization values.
 
-Do not hand-edit `project.json` while DubLab is open. Autosave can overwrite external edits, and invalid UUID/file relationships can make recordings appear unavailable.
+Do not hand-edit `project.json` while OpenVoicer is open. Autosave can overwrite external edits, and invalid UUID/file relationships can make recordings appear unavailable.
 
 ## Schema evolution
 
@@ -88,13 +88,13 @@ The original movie is not embedded in the project by default. `SourceVideoRefere
 - probed metadata;
 - an optional playback-cache reference.
 
-The bookmark allows the sandboxed app to regain access after relaunch. If the movie is moved and the bookmark cannot resolve it, DubLab reports the source as missing. Export and media regeneration require the original.
+The bookmark allows the sandboxed app to regain access after relaunch. If the movie is moved and the bookmark cannot resolve it, OpenVoicer reports the source as missing. Export and media regeneration require the original.
 
-An exported MP4 is different: it is a standalone rendered movie and does not depend on the `.dublab` package or source after export completes.
+An exported MP4 is different: it is a standalone rendered movie and does not depend on the `.openvoicer` package or source after export completes.
 
 ## MKV playback storage
 
-AVFoundation does not reliably support Matroska containers, so DubLab creates a MOV playback cache:
+AVFoundation does not reliably support Matroska containers, so OpenVoicer creates a MOV playback cache:
 
 - Clip project: only the selected range is cached.
 - Full-movie project: the complete movie is remuxed for playback.
@@ -110,7 +110,7 @@ The prepared asset records `timelineStart` and `timelineDuration` so stem-local 
 
 ## Portability and backup
 
-Copying a `.dublab` package preserves recordings and decisions, but the receiving Mac must also have access to the original movie. A future “consolidate project” feature may optionally copy source media for portable archives; that is not implemented yet.
+Copying a `.openvoicer` package preserves recordings and decisions, but the receiving Mac must also have access to the original movie. A future “consolidate project” feature may optionally copy source media for portable archives; that is not implemented yet.
 
 Recommended backup policy:
 
@@ -121,6 +121,6 @@ Recommended backup policy:
 
 ## Recovery guidance
 
-If only a generated playback proxy is corrupt, close DubLab and remove `temp/source-playback.mov`; the app regenerates it when the project is reopened. Do not remove recordings or `project.json` during troubleshooting.
+If only a generated playback proxy is corrupt, close OpenVoicer and remove `temp/source-playback.mov`; the app regenerates it when the project is reopened. Do not remove recordings or `project.json` during troubleshooting.
 
 Before manually changing a package, duplicate it in Finder so recovery remains possible.

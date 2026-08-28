@@ -1,21 +1,21 @@
-# DubLab
+# OpenVoicer
 
 **A native, local-first macOS studio for creating fan dubs one line at a time.**
 
-DubLab turns a movie and its subtitles into a focused dubbing workflow:
+OpenVoicer turns a movie and its subtitles into a focused dubbing workflow:
 
 > Listen → Record → Audition → Accept → Next
 
 Drop in a movie, choose an embedded or external subtitle track, record replacement dialogue, compare multiple takes, preview the result against the picture, and export a standalone MP4—all on your Mac.
 
-DubLab is built with Swift 6, SwiftUI, AVFoundation, and FFmpeg. There are no accounts, no cloud backend, no analytics SDKs, and no requirement to upload personal media.
+OpenVoicer is built with Swift 6, SwiftUI, AVFoundation, and FFmpeg. There are no accounts, no cloud backend, no analytics SDKs, and no requirement to upload personal media.
 
 > [!IMPORTANT]
-> DubLab is under active development. The source builds and the core workflow is usable, but release packaging, signing, notarization, and a bundled FFmpeg/source-separation runtime are not finished yet. Developers currently provide these tools locally.
+> OpenVoicer is under active development. The source builds and the core workflow is usable, but release packaging, signing, notarization, and a bundled FFmpeg/source-separation runtime are not finished yet. Developers currently provide these tools locally.
 
-## Why DubLab?
+## Why OpenVoicer?
 
-Traditional video editors can create a dub, but they are not optimized for repeating the same small action hundreds of times. DubLab is designed specifically around dialogue segments and fast keyboard-driven recording.
+Traditional video editors can create a dub, but they are not optimized for repeating the same small action hundreds of times. OpenVoicer is designed specifically around dialogue segments and fast keyboard-driven recording.
 
 - Native macOS interface—not Electron and not a web wrapper
 - Local processing and local project storage
@@ -31,7 +31,7 @@ Traditional video editors can create a dub, but they are not optimized for repea
 
 ### Projects and media
 
-- Create, open, autosave, and reopen `.dublab` project packages
+- Create, open, autosave, and reopen `.openvoicer` project packages
 - Recent projects on the welcome screen
 - Drag-and-drop and native file pickers
 - Security-scoped bookmarks for persistent access to source media
@@ -74,14 +74,14 @@ The main player can switch between the original movie and a continuous preview o
 
 ### Dialogue preparation
 
-DubLab inspects the selected audio track and recommends a preparation strategy:
+OpenVoicer inspects the selected audio track and recommends a preparation strategy:
 
 1. Use a detected M&E (music and effects) track when one is available.
 2. Recognize useful surround sources for future/assisted processing.
 3. Otherwise use the optional Bandit v2 local separation model.
 4. Fall back to original-audio ducking when separation is unavailable or unwanted.
 
-Dialogue separation is inherently imperfect. Film mixes contain overlapping speech, music, ambience, reverb, crowds, and effects. DubLab keeps the original source untouched and makes separation optional rather than presenting it as lossless dialogue removal.
+Dialogue separation is inherently imperfect. Film mixes contain overlapping speech, music, ambience, reverb, crowds, and effects. OpenVoicer keeps the original source untouched and makes separation optional rather than presenting it as lossless dialogue removal.
 
 ### Export
 
@@ -113,7 +113,7 @@ Clone the repository using the URL from GitHub's **Code** menu, then enter the c
 cd openvoicer
 ```
 
-The repository directory is still named `openvoicer`; the product and scheme are named DubLab. Naming cleanup is planned before the first stable release.
+The repository, source directory, and Xcode scheme use the lowercase `openvoicer` name; the macOS product is displayed as **OpenVoicer**.
 
 ### 2. Install development media tools
 
@@ -123,7 +123,7 @@ Homebrew is acceptable for development:
 brew install ffmpeg
 ```
 
-DubLab searches for FFmpeg in the application bundle, `/opt/homebrew/bin`, `/usr/local/bin`, and `/usr/bin`.
+OpenVoicer searches for FFmpeg in the application bundle, `/opt/homebrew/bin`, `/usr/local/bin`, and `/usr/bin`.
 
 Optional local dialogue separation currently also requires:
 
@@ -131,7 +131,7 @@ Optional local dialogue separation currently also requires:
 brew install uv python
 ```
 
-The first separation setup downloads a pinned `bandit-infer` revision, its Python/MLX dependencies, and the Bandit v2 checkpoint into DubLab's Application Support directory. See [Third-party notices](THIRD_PARTY_NOTICES.md).
+The first separation setup downloads a pinned `bandit-infer` revision, its Python/MLX dependencies, and the Bandit v2 checkpoint into OpenVoicer's Application Support directory. See [Third-party notices](THIRD_PARTY_NOTICES.md).
 
 ### 3. Open and run
 
@@ -161,7 +161,7 @@ swift test --disable-sandbox
 
 The test suite covers subtitle parsing, project migration and serialization, audio-preparation models, and FFmpeg export command generation.
 
-## Using DubLab
+## Using OpenVoicer
 
 ### Create a project
 
@@ -193,7 +193,7 @@ Open the Export inspector and choose:
 - **Continuous Clip** for one uninterrupted time range
 - **Review Reel** to concatenate selected or accepted dialogue regions
 
-The exported MP4 is standalone. It does not link back to the `.dublab` project or original movie after rendering.
+The exported MP4 is standalone. It does not link back to the `.openvoicer` project or original movie after rendering.
 
 ## Keyboard shortcuts
 
@@ -215,7 +215,7 @@ The exported MP4 is standalone. It does not link back to the `.dublab` project o
 A project is a Finder package with a readable, versioned layout:
 
 ```text
-My Dub.dublab/
+My Dub.openvoicer/
 ├── project.json
 ├── recordings/
 ├── prepared-audio/
@@ -229,7 +229,7 @@ The source movie is referenced through a security-scoped bookmark and is not cop
 
 ## Architecture
 
-DubLab uses focused controllers and services instead of one global view model:
+OpenVoicer uses focused controllers and services instead of one global view model:
 
 - SwiftUI views for the workspace and inspectors
 - Domain models independent of UI
@@ -283,8 +283,8 @@ Media bugs are often container-, codec-, or track-specific. Never upload copyrig
 
 ## License
 
-DubLab is licensed under the [GNU General Public License v3.0](LICENSE) (`GPL-3.0-only`). Third-party components and model weights retain their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+OpenVoicer is licensed under the [GNU General Public License v3.0](LICENSE) (`GPL-3.0-only`). Third-party components and model weights retain their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Acknowledgements
 
-DubLab builds on Apple's AVFoundation and SwiftUI, FFmpeg, MLX, and the open source source-separation research ecosystem. The project exists because local creative tools should be understandable, modifiable, and usable without surrendering personal media to a cloud service.
+OpenVoicer builds on Apple's AVFoundation and SwiftUI, FFmpeg, MLX, and the open source source-separation research ecosystem. The project exists because local creative tools should be understandable, modifiable, and usable without surrendering personal media to a cloud service.

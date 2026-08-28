@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import DubLabModels
+@testable import OpenVoicerModels
 
 struct ProjectModelTests {
     @Test func projectRoundTripsSegments() throws {

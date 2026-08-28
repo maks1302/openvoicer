@@ -24,7 +24,7 @@ actor BanditSourceSeparationService: SourceSeparationService {
     static let modelID = "bandit-v2-multi"
     static let packageRevision = "d45cdec634bf1ee01cdd2acea74a2d100e639c8a"
 
-    private let logger = Logger(subsystem: "com.dublab.app", category: "separation")
+    private let logger = Logger(subsystem: "com.openvoicer.app", category: "separation")
     private var activeProcess: Process?
 
     func isRuntimeReady() -> Bool {
@@ -169,7 +169,7 @@ actor BanditSourceSeparationService: SourceSeparationService {
 
     private var runtimeRoot: URL {
         URL.applicationSupportDirectory
-            .appending(path: "DubLab", directoryHint: .isDirectory)
+            .appending(path: "OpenVoicer", directoryHint: .isDirectory)
             .appending(path: "SourceSeparation", directoryHint: .isDirectory)
     }
 
@@ -253,13 +253,13 @@ enum SourceSeparationError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .uvNotInstalled:
-            "The development separation runtime needs uv. Install uv, then try again. DubLab will bundle this runtime for distribution."
+            "The development separation runtime needs uv. Install uv, then try again. OpenVoicer will bundle this runtime for distribution."
         case .developmentPythonNotInstalled:
-            "The development separation runtime needs Homebrew Python 3.12 or newer. DubLab will bundle its own signed runtime for distribution."
+            "The development separation runtime needs Homebrew Python 3.12 or newer. OpenVoicer will bundle its own signed runtime for distribution."
         case .runtimeUnavailable:
             "The local dialogue-separation model has not been installed."
         case .helperMissing:
-            "DubLab’s dialogue-separation helper is missing from the application bundle."
+            "OpenVoicer’s dialogue-separation helper is missing from the application bundle."
         case .processFailed(let details):
             "Dialogue separation failed. \(details)"
         case .missingOutput:

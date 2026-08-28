@@ -2,14 +2,14 @@ import Foundation
 import OSLog
 
 actor FFmpegService {
-    private let logger = Logger(subsystem: "com.dublab.app", category: "ffmpeg")
+    private let logger = Logger(subsystem: "com.openvoicer.app", category: "ffmpeg")
 
     func mediaMetadata(in source: URL) async throws -> VideoMetadata {
         guard let executableURL = Self.findExecutable(named: "ffprobe") else {
             throw FFmpegError.notInstalled
         }
         let temporaryDirectory = FileManager.default.temporaryDirectory
-            .appending(path: "DubLab-MediaProbe-\(UUID().uuidString)", directoryHint: .isDirectory)
+            .appending(path: "OpenVoicer-MediaProbe-\(UUID().uuidString)", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
         let outputURL = temporaryDirectory.appending(path: "media.json")
@@ -113,7 +113,7 @@ actor FFmpegService {
             throw FFmpegError.notInstalled
         }
         let temporaryDirectory = FileManager.default.temporaryDirectory
-            .appending(path: "DubLab-Probe-\(UUID().uuidString)", directoryHint: .isDirectory)
+            .appending(path: "OpenVoicer-Probe-\(UUID().uuidString)", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
         let outputURL = temporaryDirectory.appending(path: "video-codec.json")
@@ -144,7 +144,7 @@ actor FFmpegService {
             throw FFmpegError.notInstalled
         }
         let temporaryDirectory = FileManager.default.temporaryDirectory
-            .appending(path: "DubLab-\(UUID().uuidString)", directoryHint: .isDirectory)
+            .appending(path: "OpenVoicer-\(UUID().uuidString)", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
         let outputURL = temporaryDirectory.appending(path: "subtitle-tracks.json")
         let logURL = temporaryDirectory.appending(path: "ffprobe.log")
@@ -186,7 +186,7 @@ actor FFmpegService {
             throw FFmpegError.notInstalled
         }
         let temporaryDirectory = FileManager.default.temporaryDirectory
-            .appending(path: "DubLab-AudioProbe-\(UUID().uuidString)", directoryHint: .isDirectory)
+            .appending(path: "OpenVoicer-AudioProbe-\(UUID().uuidString)", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
         let outputURL = temporaryDirectory.appending(path: "audio-tracks.json")
@@ -598,13 +598,13 @@ enum FFmpegError: LocalizedError {
         case .processFailed:
             "FFmpeg could not create a playable copy of this MKV file. See ffmpeg-remux.log in the project’s temp folder for technical details."
         case .probeFailed:
-            "DubLab could not inspect the embedded subtitle tracks."
+            "OpenVoicer could not inspect the embedded subtitle tracks."
         case .unsupportedSubtitleCodec(let codec):
             "The embedded \(codec.uppercased()) subtitle track is image-based or otherwise cannot be converted to editable dialogue."
         case .subtitleExtractionFailed:
-            "DubLab could not extract the selected embedded subtitle track."
+            "OpenVoicer could not extract the selected embedded subtitle track."
         case .audioExtractionFailed:
-            "DubLab could not prepare this section of the movie audio for dialogue separation."
+            "OpenVoicer could not prepare this section of the movie audio for dialogue separation."
         }
     }
 }

@@ -57,7 +57,7 @@ struct ProjectView: View {
             VideoWorkspaceView(controller: controller)
                 .frame(minWidth: 620)
         }
-        .navigationTitle(controller.project?.name ?? "DubLab")
+        .navigationTitle(controller.project?.name ?? "OpenVoicer")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 ForEach(WorkspaceInspectorSection.allCases) { section in

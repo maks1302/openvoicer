@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small JSON-speaking bridge between DubLab and Bandit's local MLX runtime."""
+"""Small JSON-speaking bridge between OpenVoicer and Bandit's local MLX runtime."""
 
 from __future__ import annotations
 
@@ -118,7 +118,7 @@ def separate_streaming(
     overlap_seconds = 2
     with wave.open(str(input_path), "rb") as source:
         if source.getsampwidth() != 2:
-            raise ValueError("DubLab's Bandit bridge requires 16-bit PCM input")
+            raise ValueError("OpenVoicer's Bandit bridge requires 16-bit PCM input")
         sample_rate = source.getframerate()
         output_channels = source.getnchannels()
         total_frames = source.getnframes()
@@ -161,7 +161,7 @@ def separate_streaming(
                         if audio.shape[1] != count:
                             raise ValueError(
                                 "The extracted movie audio has an invalid duration header. "
-                                "Prepare the movie audio again with this version of DubLab."
+                                "Prepare the movie audio again with this version of OpenVoicer."
                             )
                         if reference is not None:
                             reference_audio = read_pcm16_frames(reference, start, count)
@@ -170,7 +170,7 @@ def separate_streaming(
                         if reference_audio is not None and reference_audio.shape[1] != count:
                             raise ValueError(
                                 "The extracted center reference has an invalid duration header. "
-                                "Prepare the movie audio again with this version of DubLab."
+                                "Prepare the movie audio again with this version of OpenVoicer."
                             )
                         # Always infer from the complete movie mix. The former
                         # center-only path discarded stereo context and caused a

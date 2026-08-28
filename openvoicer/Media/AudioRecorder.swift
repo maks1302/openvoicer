@@ -7,8 +7,8 @@ struct AudioRecordingResult: Sendable {
 }
 
 final class AudioRecorder: NSObject, @unchecked Sendable {
-    private let queue = DispatchQueue(label: "com.dublab.recording.capture", qos: .userInitiated)
-    private let logger = Logger(subsystem: "com.dublab.app", category: "recording")
+    private let queue = DispatchQueue(label: "com.openvoicer.recording.capture", qos: .userInitiated)
+    private let logger = Logger(subsystem: "com.openvoicer.app", category: "recording")
 
     private var session: AVCaptureSession?
     private var writer: AVAssetWriter?
@@ -207,7 +207,7 @@ enum AudioRecorderError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .microphoneUnavailable: "The selected microphone is not available."
-        case .permissionDenied: "Microphone permission was denied. Enable DubLab in System Settings → Privacy & Security → Microphone."
+        case .permissionDenied: "Microphone permission was denied. Enable OpenVoicer in System Settings → Privacy & Security → Microphone."
         case .alreadyRecording: "A recording is already in progress."
         case .notRecording: "No recording is currently in progress."
         case .noAudioCaptured: "No microphone audio was captured."

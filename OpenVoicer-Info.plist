@@ -5,19 +5,19 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>DubLab</string>
+	<string>OpenVoicer</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleTypeName</key>
-			<string>DubLab Project</string>
+			<string>OpenVoicer Project</string>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>LSHandlerRank</key>
 			<string>Owner</string>
 			<key>LSItemContentTypes</key>
 			<array>
-				<string>com.dublab.project</string>
+				<string>com.openvoicer.project</string>
 			</array>
 		</dict>
 	</array>
@@ -40,7 +40,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>DubLab uses the microphone to record replacement dialogue locally in your project.</string>
+	<string>OpenVoicer uses the microphone to record replacement dialogue locally in your project.</string>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>
@@ -49,14 +49,14 @@
 				<string>com.apple.package</string>
 			</array>
 			<key>UTTypeDescription</key>
-			<string>DubLab Project</string>
+			<string>OpenVoicer Project</string>
 			<key>UTTypeIdentifier</key>
-			<string>com.dublab.project</string>
+			<string>com.openvoicer.project</string>
 			<key>UTTypeTagSpecification</key>
 			<dict>
 				<key>public.filename-extension</key>
 				<array>
-					<string>dublab</string>
+					<string>openvoicer</string>
 				</array>
 			</dict>
 		</dict>

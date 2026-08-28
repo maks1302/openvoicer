@@ -52,7 +52,7 @@ enum SubtitleParserError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .unsupportedFormat:
-            "DubLab currently supports SRT and WebVTT subtitle files."
+            "OpenVoicer currently supports SRT and WebVTT subtitle files."
         case .invalidUTF8:
             "The subtitle file is not valid UTF-8 text."
         case .noValidCues:

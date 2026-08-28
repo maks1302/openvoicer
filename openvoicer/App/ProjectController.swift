@@ -56,7 +56,7 @@ final class ProjectController {
     private let metadataLoader = VideoMetadataLoader()
     private let ffmpegService = FFmpegService()
     private let subtitleParser = SubtitleParserService()
-    private let logger = Logger(subsystem: "com.dublab.app", category: "project")
+    private let logger = Logger(subsystem: "com.openvoicer.app", category: "project")
     private var accessedProjectURL: URL?
     private var accessedVideoURL: URL?
     @ObservationIgnored private var recordingTask: Task<Void, Never>?
@@ -137,15 +137,15 @@ final class ProjectController {
         newProjectPreviewPlayer.pause()
         newProjectAuditionPlayer?.pause()
         let panel = NSSavePanel()
-        panel.title = draft.scopeMode == .clip ? "Save Clip Project" : "Save DubLab Project"
+        panel.title = draft.scopeMode == .clip ? "Save Clip Project" : "Save OpenVoicer Project"
         panel.prompt = "Create"
-        panel.allowedContentTypes = [.dubLabProject]
+        panel.allowedContentTypes = [.openVoicerProject]
         panel.canCreateDirectories = true
-        panel.nameFieldStringValue = draft.sourceURL.deletingPathExtension().lastPathComponent + ".dublab"
+        panel.nameFieldStringValue = draft.sourceURL.deletingPathExtension().lastPathComponent + ".openvoicer"
         guard panel.runModal() == .OK, let selectedURL = panel.url else { return }
-        let packageURL = selectedURL.pathExtension.lowercased() == "dublab"
+        let packageURL = selectedURL.pathExtension.lowercased() == "openvoicer"
             ? selectedURL
-            : selectedURL.appendingPathExtension("dublab")
+            : selectedURL.appendingPathExtension("openvoicer")
         let name = packageURL.deletingPathExtension().lastPathComponent
         isCreatingProjectFromDraft = true
 
@@ -197,7 +197,7 @@ final class ProjectController {
             ? draft.normalizedClipStart
             : min(max(draft.metadata.duration * 0.1, 30), max(draft.metadata.duration - 8, 0))
         let destination = FileManager.default.temporaryDirectory
-            .appending(path: "DubLab-Audition-\(UUID().uuidString).wav")
+            .appending(path: "OpenVoicer-Audition-\(UUID().uuidString).wav")
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -249,7 +249,7 @@ final class ProjectController {
                 let targetTime: TimeInterval
                 if draft.sourceURL.pathExtension.lowercased() == "mkv" {
                     let destination = FileManager.default.temporaryDirectory
-                        .appending(path: "DubLab-SetupPreview-\(UUID().uuidString).mp4")
+                        .appending(path: "OpenVoicer-SetupPreview-\(UUID().uuidString).mp4")
                     transientPreviewURL = destination
                     try await ffmpegService.createSetupPreview(
                         source: draft.sourceURL,
@@ -305,9 +305,9 @@ final class ProjectController {
 
     func showOpenProjectPanel() {
         let panel = NSOpenPanel()
-        panel.title = "Open DubLab Project"
+        panel.title = "Open OpenVoicer Project"
         panel.prompt = "Open"
-        panel.allowedContentTypes = [.dubLabProject]
+        panel.allowedContentTypes = [.openVoicerProject]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
@@ -317,7 +317,7 @@ final class ProjectController {
     }
 
     func openProjectURL(_ url: URL) {
-        guard url.pathExtension.lowercased() == "dublab" else { return }
+        guard url.pathExtension.lowercased() == "openvoicer" else { return }
         Task { await openProject(at: url) }
     }
 
@@ -637,7 +637,7 @@ final class ProjectController {
         let preparationDuration = max(0, preparationEnd - preparationStart)
         let cleaningPreset = project?.settings.dialogueCleaningPreset ?? .balanced
         let workingDirectory = FileManager.default.temporaryDirectory
-            .appending(path: "DubLab-MovieAudio-\(UUID().uuidString)", directoryHint: .isDirectory)
+            .appending(path: "OpenVoicer-MovieAudio-\(UUID().uuidString)", directoryHint: .isDirectory)
         let originalMixURL = workingDirectory.appending(path: "original-mix.wav")
         let dialogueURL = workingDirectory.appending(path: "dialogue.wav")
         let backgroundURL = workingDirectory.appending(path: "background.wav")
@@ -1255,7 +1255,7 @@ final class ProjectController {
             logger.info("Opened project \(loadedProject.name, privacy: .public)")
         } catch {
             if didStartAccess { url.stopAccessingSecurityScopedResource() }
-            present(error, fallback: "The selected DubLab project could not be opened.")
+            present(error, fallback: "The selected OpenVoicer project could not be opened.")
         }
     }
 

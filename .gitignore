@@ -6,7 +6,7 @@ build/
 xcuserdata/
 *.xccheckout
 *.xcscmblueprint
-*.dublab/
+*.openvoicer/
 *.wav
 *.mp4
 *.mov
