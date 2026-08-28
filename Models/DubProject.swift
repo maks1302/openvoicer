@@ -1,7 +1,7 @@
 import Foundation
 
 struct DubProject: Codable, Identifiable, Hashable, Sendable {
-    static let currentSchemaVersion = 9
+    static let currentSchemaVersion = 10
 
     var schemaVersion: Int
     let id: UUID
@@ -14,6 +14,7 @@ struct DubProject: Codable, Identifiable, Hashable, Sendable {
     var speakers: [Speaker]
     var settings: ProjectSettings
     var preparedAudioAssets: [PreparedAudioAsset]
+    var mediaScope: ProjectMediaScope
 
     init(name: String) {
         schemaVersion = Self.currentSchemaVersion
@@ -27,11 +28,12 @@ struct DubProject: Codable, Identifiable, Hashable, Sendable {
         speakers = []
         settings = ProjectSettings()
         preparedAudioAssets = []
+        mediaScope = .fullMovie
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, id, name, createdAt, modifiedAt, sourceVideo
-        case subtitleSource, segments, speakers, settings, preparedAudioAssets
+        case subtitleSource, segments, speakers, settings, preparedAudioAssets, mediaScope
     }
 
     init(from decoder: Decoder) throws {
@@ -50,6 +52,37 @@ struct DubProject: Codable, Identifiable, Hashable, Sendable {
             [PreparedAudioAsset].self,
             forKey: .preparedAudioAssets
         ) ?? []
+        mediaScope = try container.decodeIfPresent(ProjectMediaScope.self, forKey: .mediaScope) ?? .fullMovie
+    }
+}
+
+struct ProjectMediaScope: Codable, Hashable, Sendable {
+    enum Mode: String, Codable, CaseIterable, Identifiable, Hashable, Sendable {
+        case fullMovie
+        case clip
+
+        var id: Self { self }
+    }
+
+    var mode: Mode
+    var sourceStartTime: TimeInterval
+    var sourceEndTime: TimeInterval?
+
+    static let fullMovie = ProjectMediaScope(
+        mode: .fullMovie,
+        sourceStartTime: 0,
+        sourceEndTime: nil
+    )
+
+    static func clip(start: TimeInterval, end: TimeInterval) -> ProjectMediaScope {
+        ProjectMediaScope(mode: .clip, sourceStartTime: start, sourceEndTime: end)
+    }
+
+    func resolvedRange(sourceDuration: TimeInterval) -> ClosedRange<TimeInterval> {
+        guard mode == .clip, let sourceEndTime else { return 0...max(sourceDuration, 0) }
+        let start = min(max(sourceStartTime, 0), sourceDuration)
+        let end = min(max(sourceEndTime, start), sourceDuration)
+        return start...end
     }
 }
 
@@ -62,6 +95,8 @@ struct PreparedAudioAsset: Codable, Hashable, Identifiable, Sendable {
     var backgroundFileName: String
     var modelID: String
     var createdAt: Date
+    var timelineStart: TimeInterval
+    var timelineDuration: TimeInterval?
 
     init(
         id: UUID = UUID(),
@@ -71,7 +106,9 @@ struct PreparedAudioAsset: Codable, Hashable, Identifiable, Sendable {
         dialogueFileName: String,
         backgroundFileName: String,
         modelID: String,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        timelineStart: TimeInterval = 0,
+        timelineDuration: TimeInterval? = nil
     ) {
         self.id = id
         self.sourceAudioTrackID = sourceAudioTrackID
@@ -81,6 +118,28 @@ struct PreparedAudioAsset: Codable, Hashable, Identifiable, Sendable {
         self.backgroundFileName = backgroundFileName
         self.modelID = modelID
         self.createdAt = createdAt
+        self.timelineStart = timelineStart
+        self.timelineDuration = timelineDuration
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, sourceAudioTrackID, backgroundSourceTrackID, strategy
+        case dialogueFileName, backgroundFileName, modelID, createdAt
+        case timelineStart, timelineDuration
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        sourceAudioTrackID = try container.decode(String.self, forKey: .sourceAudioTrackID)
+        backgroundSourceTrackID = try container.decodeIfPresent(String.self, forKey: .backgroundSourceTrackID)
+        strategy = try container.decode(AudioPreparationStrategy.self, forKey: .strategy)
+        dialogueFileName = try container.decode(String.self, forKey: .dialogueFileName)
+        backgroundFileName = try container.decode(String.self, forKey: .backgroundFileName)
+        modelID = try container.decode(String.self, forKey: .modelID)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        timelineStart = try container.decodeIfPresent(TimeInterval.self, forKey: .timelineStart) ?? 0
+        timelineDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .timelineDuration)
     }
 }
 
@@ -118,12 +177,13 @@ struct ProjectSettings: Codable, Hashable, Sendable {
     var dialogueCleaningPreset: DialogueCleaningPreset = .balanced
     var cleanBackgroundVolume: Float = 1.0
     var selectedAudioTrackID: String?
+    var audioPreparationPreference: AudioPreparationPreference = .automatic
 
     private enum CodingKeys: String, CodingKey {
         case preRollDuration, postRollDuration, originalVolume, duckedOriginalVolume
         case selectedInputDeviceID, recordingCountdownSeconds, recordingGain
         case dialogueCleaningPreset, cleanBackgroundVolume
-        case selectedAudioTrackID
+        case selectedAudioTrackID, audioPreparationPreference
     }
 
     init() {}
@@ -143,6 +203,30 @@ struct ProjectSettings: Codable, Hashable, Sendable {
         ) ?? .balanced
         cleanBackgroundVolume = try container.decodeIfPresent(Float.self, forKey: .cleanBackgroundVolume) ?? 1.0
         selectedAudioTrackID = try container.decodeIfPresent(String.self, forKey: .selectedAudioTrackID)
+        audioPreparationPreference = try container.decodeIfPresent(
+            AudioPreparationPreference.self,
+            forKey: .audioPreparationPreference
+        ) ?? .automatic
+    }
+}
+
+enum AudioPreparationPreference: String, Codable, CaseIterable, Identifiable, Hashable, Sendable {
+    case automatic
+    case embeddedMusicAndEffects
+    case surroundAssisted
+    case cinematicSeparation
+    case duckingOnly
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .automatic: "Automatic"
+        case .embeddedMusicAndEffects: "Embedded M&E"
+        case .surroundAssisted: "Surround-Assisted"
+        case .cinematicSeparation: "Cinematic AI"
+        case .duckingOnly: "Original Audio Ducking"
+        }
     }
 }
 

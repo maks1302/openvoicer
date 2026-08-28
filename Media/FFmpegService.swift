@@ -4,6 +4,63 @@ import OSLog
 actor FFmpegService {
     private let logger = Logger(subsystem: "com.dublab.app", category: "ffmpeg")
 
+    func mediaMetadata(in source: URL) async throws -> VideoMetadata {
+        guard let executableURL = Self.findExecutable(named: "ffprobe") else {
+            throw FFmpegError.notInstalled
+        }
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "DubLab-MediaProbe-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let outputURL = temporaryDirectory.appending(path: "media.json")
+        let logURL = temporaryDirectory.appending(path: "ffprobe.log")
+        let arguments = [
+            "-v", "error",
+            "-show_entries",
+            "format=duration:stream=codec_type,codec_name,width,height,avg_frame_rate,channels:stream_tags=language,title",
+            "-of", "json",
+            "-i", "pipe:0"
+        ]
+        let result = try await Task.detached(priority: .utility) {
+            try MediaProcess.run(
+                executableURL: executableURL,
+                arguments: arguments,
+                inputURL: source,
+                outputURL: outputURL,
+                logURL: logURL
+            )
+        }.value
+        guard result.exitCode == 0 else { throw FFmpegError.probeFailed }
+        let probe = try JSONDecoder().decode(
+            FFprobeMediaOutput.self,
+            from: Data(contentsOf: outputURL)
+        )
+        guard let duration = probe.format.duration.flatMap(Double.init), duration > 0,
+              let video = probe.streams.first(where: { $0.codecType == "video" }) else {
+            throw VideoImportError.invalidDuration
+        }
+        let audioTracks = probe.streams
+            .filter { $0.codecType == "audio" }
+            .enumerated()
+            .map { index, stream in
+                AudioTrackMetadata(
+                    id: "audio-\(index)",
+                    title: stream.tags?.title?.nilIfEmpty ?? "Audio \(index + 1)",
+                    languageCode: stream.tags?.language?.nilIfEmpty,
+                    codec: stream.codecName,
+                    channelCount: stream.channels
+                )
+            }
+        return VideoMetadata(
+            duration: duration,
+            width: video.width ?? 0,
+            height: video.height ?? 0,
+            frameRate: Self.parseFrameRate(video.averageFrameRate),
+            videoCodec: video.codecName,
+            audioTracks: audioTracks
+        )
+    }
+
     func createPlaybackCopy(source: URL, destination: URL) async throws {
         guard let executableURL = Self.findExecutable(named: "ffmpeg") else {
             throw FFmpegError.notInstalled
@@ -229,15 +286,14 @@ actor FFmpegService {
         }
         arguments += [
             "-ar", "48000", "-c:a", "pcm_s16le",
-            "-f", "wav", "pipe:1"
+            "-f", "wav", destination.path
         ]
 
         let result = try await Task.detached(priority: .userInitiated) {
-            try MediaProcess.run(
+            try MediaProcess.runWithStreamingInput(
                 executableURL: executableURL,
                 arguments: arguments,
                 inputURL: source,
-                outputURL: destination,
                 logURL: logURL
             )
         }.value
@@ -250,6 +306,8 @@ actor FFmpegService {
         from source: URL,
         audioTrackIndex: Int,
         mode: AudioTrackExtractionMode,
+        startTime: TimeInterval? = nil,
+        duration: TimeInterval? = nil,
         destination: URL
     ) async throws {
         guard let executableURL = Self.findExecutable(named: "ffmpeg") else {
@@ -266,20 +324,30 @@ actor FFmpegService {
             "-map", "0:a:\(audioTrackIndex)",
             "-vn", "-sn"
         ]
+        if let startTime, startTime > 0 {
+            arguments += ["-ss", Self.number(startTime)]
+        }
+        if let duration, duration > 0 {
+            arguments += ["-t", Self.number(duration)]
+        }
         switch mode {
         case .stereoMix:
             arguments += ["-ac", "2"]
         case .centerReference:
             arguments += ["-af", "pan=mono|c0=FC", "-ac", "1"]
         }
-        arguments += ["-ar", "48000", "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"]
+        // WAV requires FFmpeg to seek back and finalize its RIFF/data sizes.
+        // Sending WAV to stdout leaves those fields at 0xffffffff, which makes
+        // Python's wave reader report billions of nonexistent frames. Keep the
+        // movie input on a security-safe pipe, but write this temporary output
+        // directly so the header contains the true duration.
+        arguments += ["-ar", "48000", "-c:a", "pcm_s16le", "-f", "wav", destination.path]
 
         let result = try await Task.detached(priority: .userInitiated) {
-            try MediaProcess.run(
+            try MediaProcess.runWithStreamingInput(
                 executableURL: executableURL,
                 arguments: arguments,
                 inputURL: source,
-                outputURL: destination,
                 logURL: logURL
             )
         }.value
@@ -322,6 +390,51 @@ actor FFmpegService {
         }
     }
 
+    func createSetupPreview(
+        source: URL,
+        startTime: TimeInterval,
+        duration: TimeInterval,
+        audioTrackIndex: Int,
+        destination: URL
+    ) async throws {
+        guard let executableURL = Self.findExecutable(named: "ffmpeg") else {
+            throw FFmpegError.notInstalled
+        }
+        let logURL = destination.deletingLastPathComponent().appending(path: "ffmpeg-setup-preview.log")
+        let arguments = [
+            "-hide_banner", "-nostdin", "-y",
+            "-i", "pipe:0",
+            "-ss", Self.number(startTime),
+            "-t", Self.number(duration),
+            "-map", "0:v:0",
+            "-map", "0:a:\(audioTrackIndex)?",
+            "-vf", "scale=w='min(960,iw)':h=-2",
+            // Setup previews are deliberately short. Software H.264 is more
+            // reliable here than VideoToolbox, which may reject an encoding
+            // session while the app is sandboxed or running headlessly.
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "24",
+            "-c:a", "aac",
+            "-b:a", "160k",
+            "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+            "-f", "mp4",
+            "pipe:1"
+        ]
+        let result = try await Task.detached(priority: .userInitiated) {
+            try MediaProcess.run(
+                executableURL: executableURL,
+                arguments: arguments,
+                inputURL: source,
+                outputURL: destination,
+                logURL: logURL
+            )
+        }.value
+        guard result.exitCode == 0 else {
+            throw FFmpegError.processFailed(details: result.errorSummary)
+        }
+    }
+
     private nonisolated static func findExecutable(named name: String) -> URL? {
         let fileManager = FileManager.default
         let candidates = [
@@ -333,6 +446,27 @@ actor FFmpegService {
 
         return candidates.first { fileManager.isExecutableFile(atPath: $0.path) }
     }
+
+    private nonisolated static func parseFrameRate(_ value: String?) -> Double? {
+        guard let value else { return nil }
+        let parts = value.split(separator: "/")
+        if parts.count == 2,
+           let numerator = Double(parts[0]),
+           let denominator = Double(parts[1]), denominator != 0 {
+            let rate = numerator / denominator
+            return rate > 0 ? rate : nil
+        }
+        return Double(value).flatMap { $0 > 0 ? $0 : nil }
+    }
+
+    private nonisolated static func number(_ value: Double) -> String {
+        value.formatted(
+            .number
+                .locale(Locale(identifier: "en_US_POSIX"))
+                .precision(.fractionLength(0...6))
+                .grouping(.never)
+        )
+    }
 }
 
 enum AudioTrackExtractionMode: Sendable {
@@ -341,6 +475,40 @@ enum AudioTrackExtractionMode: Sendable {
 }
 
 private enum MediaProcess {
+    nonisolated static func runWithStreamingInput(
+        executableURL: URL,
+        arguments: [String],
+        inputURL: URL,
+        logURL: URL
+    ) throws -> MediaProcessResult {
+        _ = FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        let logHandle = try FileHandle(forWritingTo: logURL)
+        try logHandle.truncate(atOffset: 0)
+        let inputHandle = try FileHandle(forReadingFrom: inputURL)
+        defer {
+            try? logHandle.close()
+            try? inputHandle.close()
+        }
+
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.standardInput = inputHandle
+        process.standardOutput = logHandle
+        process.standardError = logHandle
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            throw FFmpegError.couldNotLaunch(error.localizedDescription)
+        }
+
+        let errorSummary = (try? String(contentsOf: logURL, encoding: .utf8))
+            .map { String($0.suffix(2_000)) } ?? "No diagnostic output was produced."
+        return MediaProcessResult(exitCode: process.terminationStatus, errorSummary: errorSummary)
+    }
+
     nonisolated static func run(
         executableURL: URL,
         arguments: [String],
@@ -486,6 +654,37 @@ private struct FFprobeAudioOutput: Decodable {
             case codecName = "codec_name"
             case channels, tags
         }
+    }
+
+    struct Tags: Decodable {
+        let language: String?
+        let title: String?
+    }
+}
+
+private struct FFprobeMediaOutput: Decodable {
+    let streams: [Stream]
+    let format: Format
+
+    struct Stream: Decodable {
+        let codecType: String?
+        let codecName: String?
+        let width: Int?
+        let height: Int?
+        let averageFrameRate: String?
+        let channels: Int?
+        let tags: Tags?
+
+        enum CodingKeys: String, CodingKey {
+            case codecType = "codec_type"
+            case codecName = "codec_name"
+            case width, height, channels, tags
+            case averageFrameRate = "avg_frame_rate"
+        }
+    }
+
+    struct Format: Decodable {
+        let duration: String?
     }
 
     struct Tags: Decodable {

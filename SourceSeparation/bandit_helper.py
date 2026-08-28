@@ -59,6 +59,8 @@ def separate_streaming(
         sample_rate = source.getframerate()
         output_channels = source.getnchannels()
         total_frames = source.getnframes()
+        if total_frames <= 0:
+            raise ValueError("The extracted movie audio is empty")
         reference = wave.open(str(dialogue_input_path), "rb") if dialogue_input_path else None
         try:
             if reference is not None:
@@ -93,11 +95,21 @@ def separate_streaming(
                     while start < total_frames:
                         count = min(chunk_frames, total_frames - start)
                         audio = read_pcm16_frames(source, start, count)
+                        if audio.shape[1] != count:
+                            raise ValueError(
+                                "The extracted movie audio has an invalid duration header. "
+                                "Prepare the movie audio again with this version of DubLab."
+                            )
                         inference_audio = (
                             read_pcm16_frames(reference, start, count)
                             if reference is not None
                             else audio
                         )
+                        if reference is not None and inference_audio.shape[1] != count:
+                            raise ValueError(
+                                "The extracted center reference has an invalid duration header. "
+                                "Prepare the movie audio again with this version of DubLab."
+                            )
                         stems = session.infer(inference_audio, sample_rate=sample_rate)
                         dialogue = stems["speech"]
                         if reference is not None:

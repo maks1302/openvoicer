@@ -32,11 +32,13 @@ final class ExportController {
 
     var isExporting: Bool { state == .exporting }
 
-    func configure(for duration: TimeInterval) {
-        guard duration > 0 else { return }
-        if customEndTime <= customStartTime || customEndTime > duration {
-            customStartTime = 0
-            customEndTime = min(duration, 30)
+    func configure(for range: ClosedRange<TimeInterval>) {
+        guard range.upperBound > range.lowerBound else { return }
+        if customStartTime < range.lowerBound
+            || customEndTime <= customStartTime
+            || customEndTime > range.upperBound {
+            customStartTime = range.lowerBound
+            customEndTime = min(range.upperBound, range.lowerBound + 30)
         }
     }
 

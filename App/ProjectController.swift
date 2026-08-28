@@ -26,6 +26,12 @@ final class ProjectController {
     private(set) var isPreparingMovieAudio = false
     private(set) var audioPreparationProgress = 0.0
     private(set) var audioPreparationMessage = "Movie audio is not prepared"
+    private(set) var isInspectingNewMovie = false
+    private(set) var isCreatingProjectFromDraft = false
+    var newProjectDraft: NewProjectDraft?
+    private(set) var auditioningNewProjectTrackID: String?
+    private(set) var isPreparingNewProjectPreview = false
+    @ObservationIgnored let newProjectPreviewPlayer = AVPlayer()
     var segmentPreviewMode: SegmentMixTreatment = .duckedMix
     var mainPlaybackMode: MainPlaybackMode = .original {
         didSet {
@@ -61,6 +67,12 @@ final class ProjectController {
     @ObservationIgnored private var continuousDubPreviewActive = false
     @ObservationIgnored private var activeDubbedSegmentID: UUID?
     @ObservationIgnored private var playbackVolumeRampTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingNewVideoURL: URL?
+    @ObservationIgnored private var newProjectAuditionPlayer: AVPlayer?
+    @ObservationIgnored private var newProjectAuditionURL: URL?
+    @ObservationIgnored private var newProjectPreviewURL: URL?
+    @ObservationIgnored private var newProjectPreviewStopTask: Task<Void, Never>?
+    @ObservationIgnored private var newProjectPreviewTask: Task<Void, Never>?
 
     init() {
         playback.onPlaybackStopped = { [weak self] in
@@ -72,21 +84,219 @@ final class ProjectController {
     }
 
     func showNewProjectPanel() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose a Movie for Your Dub"
+        panel.prompt = "Choose Movie"
+        panel.allowedContentTypes = [.movie]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        beginNewProjectSetup(with: url)
+    }
+
+    func dismissNewProjectAssistant() {
+        newProjectPreviewStopTask?.cancel()
+        newProjectPreviewTask?.cancel()
+        newProjectPreviewStopTask = nil
+        newProjectPreviewTask = nil
+        newProjectPreviewPlayer.pause()
+        newProjectPreviewPlayer.replaceCurrentItem(with: nil)
+        if let newProjectPreviewURL {
+            try? FileManager.default.removeItem(at: newProjectPreviewURL)
+        }
+        newProjectPreviewURL = nil
+        isPreparingNewProjectPreview = false
+        newProjectAuditionPlayer?.pause()
+        newProjectAuditionPlayer = nil
+        auditioningNewProjectTrackID = nil
+        if let newProjectAuditionURL {
+            try? FileManager.default.removeItem(at: newProjectAuditionURL)
+        }
+        newProjectAuditionURL = nil
+        if let pendingNewVideoURL {
+            if accessedVideoURL == nil,
+               project?.sourceVideo?.lastKnownPath == pendingNewVideoURL.path {
+                // Transfer the wizard's security-scoped access to the open
+                // project when a nested startAccessing call was unnecessary.
+                accessedVideoURL = pendingNewVideoURL
+            } else {
+                pendingNewVideoURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        pendingNewVideoURL = nil
+        newProjectDraft = nil
+        isCreatingProjectFromDraft = false
+    }
+
+    func createProjectFromDraft() {
+        guard let draft = newProjectDraft, draft.canCreate else { return }
+        newProjectPreviewTask?.cancel()
+        newProjectPreviewStopTask?.cancel()
+        newProjectPreviewPlayer.pause()
+        newProjectAuditionPlayer?.pause()
         let panel = NSSavePanel()
-        panel.title = "Create DubLab Project"
+        panel.title = draft.scopeMode == .clip ? "Save Clip Project" : "Save DubLab Project"
         panel.prompt = "Create"
-        panel.nameFieldStringValue = "Untitled.dublab"
         panel.allowedContentTypes = [.dubLabProject]
         panel.canCreateDirectories = true
-
+        panel.nameFieldStringValue = draft.sourceURL.deletingPathExtension().lastPathComponent + ".dublab"
         guard panel.runModal() == .OK, let selectedURL = panel.url else { return }
         let packageURL = selectedURL.pathExtension.lowercased() == "dublab"
             ? selectedURL
             : selectedURL.appendingPathExtension("dublab")
         let name = packageURL.deletingPathExtension().lastPathComponent
+        isCreatingProjectFromDraft = true
 
-        Task {
-            await createProject(named: name, at: packageURL)
+        Task { [weak self] in
+            guard let self else { return }
+            guard await createProject(named: name, at: packageURL),
+                  await importVideo(at: draft.sourceURL) else {
+                isCreatingProjectFromDraft = false
+                return
+            }
+            guard var project else { return }
+            project.mediaScope = draft.mediaScope
+            project.settings.selectedAudioTrackID = draft.selectedAudioTrackID
+            project.settings.audioPreparationPreference = draft.audioPreparationPreference
+            self.project = project
+            if let index = project.sourceVideo?.metadata.audioTracks.firstIndex(where: {
+                $0.id == draft.selectedAudioTrackID
+            }) {
+                try? await playback.selectAudioTrack(at: index)
+            }
+            let range = project.mediaScope.resolvedRange(sourceDuration: playback.duration)
+            playback.seek(to: range.lowerBound)
+            save()
+            if let streamIndex = draft.selectedEmbeddedSubtitleStreamIndex,
+               let track = draft.embeddedSubtitleTracks.first(where: { $0.streamIndex == streamIndex }) {
+                await extractAndImportEmbeddedTrack(track)
+            }
+            isCreatingProjectFromDraft = false
+            dismissNewProjectAssistant()
+            if draft.prepareBackgroundAfterCreation, draft.effectiveStrategy != nil {
+                _ = prepareMovieAudio()
+            }
+        }
+    }
+
+    func auditionNewProjectAudioTrack(_ trackID: String) {
+        guard let draft = newProjectDraft,
+              let trackIndex = draft.metadata.audioTracks.firstIndex(where: { $0.id == trackID }) else { return }
+        if auditioningNewProjectTrackID == trackID {
+            newProjectAuditionPlayer?.pause()
+            newProjectAuditionPlayer = nil
+            auditioningNewProjectTrackID = nil
+            return
+        }
+        newProjectAuditionPlayer?.pause()
+        auditioningNewProjectTrackID = trackID
+        let start = draft.scopeMode == .clip
+            ? draft.normalizedClipStart
+            : min(max(draft.metadata.duration * 0.1, 30), max(draft.metadata.duration - 8, 0))
+        let destination = FileManager.default.temporaryDirectory
+            .appending(path: "DubLab-Audition-\(UUID().uuidString).wav")
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await ffmpegService.extractAudioSegment(
+                    from: draft.sourceURL,
+                    startTime: start,
+                    duration: min(8, draft.metadata.duration - start),
+                    audioTrackIndex: trackIndex,
+                    destination: destination
+                )
+                guard auditioningNewProjectTrackID == trackID else {
+                    try? FileManager.default.removeItem(at: destination)
+                    return
+                }
+                if let newProjectAuditionURL {
+                    try? FileManager.default.removeItem(at: newProjectAuditionURL)
+                }
+                newProjectAuditionURL = destination
+                let player = AVPlayer(url: destination)
+                newProjectAuditionPlayer = player
+                player.play()
+            } catch {
+                auditioningNewProjectTrackID = nil
+                present(error, fallback: "This audio track could not be auditioned.")
+            }
+        }
+    }
+
+    func previewNewProjectSelection() {
+        guard let draft = newProjectDraft,
+              let trackIndex = draft.metadata.audioTracks.firstIndex(where: {
+                  $0.id == draft.selectedAudioTrackID
+              }) else { return }
+        newProjectAuditionPlayer?.pause()
+        auditioningNewProjectTrackID = nil
+        newProjectPreviewStopTask?.cancel()
+        newProjectPreviewTask?.cancel()
+        let start = draft.scopeMode == .clip
+            ? draft.normalizedClipStart
+            : min(max(draft.metadata.duration * 0.1, 30), max(draft.metadata.duration - 12, 0))
+        let duration = min(12, max(draft.metadata.duration - start, 0.1))
+        isPreparingNewProjectPreview = true
+
+        newProjectPreviewTask = Task { [weak self] in
+            guard let self else { return }
+            var transientPreviewURL: URL?
+            do {
+                let targetTime: TimeInterval
+                if draft.sourceURL.pathExtension.lowercased() == "mkv" {
+                    let destination = FileManager.default.temporaryDirectory
+                        .appending(path: "DubLab-SetupPreview-\(UUID().uuidString).mp4")
+                    transientPreviewURL = destination
+                    try await ffmpegService.createSetupPreview(
+                        source: draft.sourceURL,
+                        startTime: start,
+                        duration: duration,
+                        audioTrackIndex: trackIndex,
+                        destination: destination
+                    )
+                    try Task.checkCancellation()
+                    if let newProjectPreviewURL {
+                        try? FileManager.default.removeItem(at: newProjectPreviewURL)
+                    }
+                    newProjectPreviewURL = destination
+                    transientPreviewURL = nil
+                    newProjectPreviewPlayer.replaceCurrentItem(with: AVPlayerItem(url: destination))
+                    targetTime = 0
+                } else {
+                    if newProjectPreviewPlayer.currentItem?.asset as? AVURLAsset == nil {
+                        newProjectPreviewPlayer.replaceCurrentItem(with: AVPlayerItem(url: draft.sourceURL))
+                    }
+                    if let item = newProjectPreviewPlayer.currentItem,
+                       let group = try await item.asset.loadMediaSelectionGroup(for: .audible),
+                       group.options.indices.contains(trackIndex) {
+                        item.select(group.options[trackIndex], in: group)
+                    }
+                    targetTime = start
+                }
+                isPreparingNewProjectPreview = false
+                await newProjectPreviewPlayer.seek(
+                    to: CMTime(seconds: targetTime, preferredTimescale: 600),
+                    toleranceBefore: .zero,
+                    toleranceAfter: .zero
+                )
+                newProjectPreviewPlayer.play()
+                newProjectPreviewTask = nil
+                newProjectPreviewStopTask = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(duration))
+                    guard !Task.isCancelled else { return }
+                    self?.newProjectPreviewPlayer.pause()
+                }
+            } catch is CancellationError {
+                if let transientPreviewURL { try? FileManager.default.removeItem(at: transientPreviewURL) }
+                isPreparingNewProjectPreview = false
+                newProjectPreviewTask = nil
+            } catch {
+                if let transientPreviewURL { try? FileManager.default.removeItem(at: transientPreviewURL) }
+                isPreparingNewProjectPreview = false
+                newProjectPreviewTask = nil
+                present(error, fallback: "The selected movie range could not be previewed.")
+            }
         }
     }
 
@@ -166,7 +376,8 @@ final class ProjectController {
                 duckedOriginalVolume: project.settings.duckedOriginalVolume,
                 preparedDialogueURL: preparedURLs?.dialogue,
                 preparedBackgroundURL: preparedURLs?.background,
-                preparedBackgroundGain: project.settings.cleanBackgroundVolume
+                preparedBackgroundGain: project.settings.cleanBackgroundVolume,
+                preparedAudioTimelineStart: preparedURLs?.timelineStart ?? 0
             )
             exportController.start(job: job)
         } catch {
@@ -199,7 +410,7 @@ final class ProjectController {
         }
 
         if project == nil {
-            createProjectForDroppedVideo(droppedURL)
+            beginNewProjectSetup(with: droppedURL)
         } else {
             Task { await importVideo(at: droppedURL) }
         }
@@ -214,6 +425,20 @@ final class ProjectController {
     var selectedTake: RecordingTake? {
         guard let segment = selectedSegment, let takeID = segment.selectedTakeID else { return nil }
         return segment.takes.first { $0.id == takeID }
+    }
+
+    var projectPlaybackRange: ClosedRange<TimeInterval> {
+        project?.mediaScope.resolvedRange(sourceDuration: playback.duration)
+            ?? (0...max(playback.duration, 0))
+    }
+
+    var projectDuration: TimeInterval {
+        let range = projectPlaybackRange
+        return max(0, range.upperBound - range.lowerBound)
+    }
+
+    func projectDisplayTime(_ sourceTime: TimeInterval) -> TimeInterval {
+        max(0, sourceTime - projectPlaybackRange.lowerBound)
     }
 
     var selectedAudioTrack: AudioTrackMetadata? {
@@ -233,6 +458,32 @@ final class ProjectController {
         if musicAndEffectsCandidate != nil { return .embeddedMusicAndEffects }
         if (selectedAudioTrack?.channelCount ?? 2) >= 6 { return .surroundAssisted }
         return .cinematicSeparation
+    }
+
+    var selectedAudioPreparationStrategy: AudioPreparationStrategy? {
+        switch project?.settings.audioPreparationPreference ?? .automatic {
+        case .automatic:
+            recommendedAudioPreparationStrategy
+        case .embeddedMusicAndEffects:
+            musicAndEffectsCandidate == nil ? nil : .embeddedMusicAndEffects
+        case .surroundAssisted:
+            (selectedAudioTrack?.channelCount ?? 0) >= 6 ? .surroundAssisted : nil
+        case .cinematicSeparation:
+            .cinematicSeparation
+        case .duckingOnly:
+            nil
+        }
+    }
+
+    func supportsAudioPreparationPreference(_ preference: AudioPreparationPreference) -> Bool {
+        switch preference {
+        case .automatic, .cinematicSeparation, .duckingOnly:
+            true
+        case .embeddedMusicAndEffects:
+            musicAndEffectsCandidate != nil
+        case .surroundAssisted:
+            (selectedAudioTrack?.channelCount ?? 0) >= 6
+        }
     }
 
     var preparedAudioAsset: PreparedAudioAsset? {
@@ -275,8 +526,8 @@ final class ProjectController {
         guard let segment = selectedSegment, let settings = project?.settings else { return }
         continuousDubPreviewActive = false
         playback.play(
-            from: max(0, segment.startTime - settings.preRollDuration),
-            to: min(playback.duration, segment.endTime + settings.postRollDuration)
+            from: max(projectPlaybackRange.lowerBound, segment.startTime - settings.preRollDuration),
+            to: min(projectPlaybackRange.upperBound, segment.endTime + settings.postRollDuration)
         )
     }
 
@@ -353,7 +604,13 @@ final class ProjectController {
               let projectURL,
               let sourceURL = accessedVideoURL ?? playback.sourceURL,
               let selectedAudioTrack,
+              let strategy = selectedAudioPreparationStrategy,
               let audioTrackIndex = project?.sourceVideo?.metadata.audioTracks.firstIndex(of: selectedAudioTrack) else {
+            if project?.settings.audioPreparationPreference == .duckingOnly {
+                errorMessage = "This project is configured to use original-audio ducking without source separation."
+            } else if project != nil {
+                errorMessage = "The selected preparation method is not available for this audio track. Choose Automatic or Cinematic AI in Audio settings."
+            }
             return false
         }
         playback.pause()
@@ -362,8 +619,14 @@ final class ProjectController {
         audioPreparationProgress = 0.02
         audioPreparationMessage = "Inspecting the selected audio track…"
 
-        let strategy = recommendedAudioPreparationStrategy
         let meCandidate = musicAndEffectsCandidate
+        let sourceDuration = project?.sourceVideo?.metadata.duration ?? playback.duration
+        let projectRange = project?.mediaScope.resolvedRange(sourceDuration: sourceDuration)
+            ?? (0...max(sourceDuration, 0))
+        let preparationHandle: TimeInterval = project?.mediaScope.mode == .clip ? 3 : 0
+        let preparationStart = max(0, projectRange.lowerBound - preparationHandle)
+        let preparationEnd = min(sourceDuration, projectRange.upperBound + preparationHandle)
+        let preparationDuration = max(0, preparationEnd - preparationStart)
         let workingDirectory = FileManager.default.temporaryDirectory
             .appending(path: "DubLab-MovieAudio-\(UUID().uuidString)", directoryHint: .isDirectory)
         let originalMixURL = workingDirectory.appending(path: "original-mix.wav")
@@ -381,6 +644,8 @@ final class ProjectController {
                     from: sourceURL,
                     audioTrackIndex: audioTrackIndex,
                     mode: .stereoMix,
+                    startTime: preparationStart,
+                    duration: preparationDuration,
                     destination: originalMixURL
                 )
                 try Task.checkCancellation()
@@ -398,6 +663,8 @@ final class ProjectController {
                         from: sourceURL,
                         audioTrackIndex: meIndex,
                         mode: .stereoMix,
+                        startTime: preparationStart,
+                        duration: preparationDuration,
                         destination: backgroundURL
                     )
                     try Task.checkCancellation()
@@ -414,7 +681,9 @@ final class ProjectController {
                         sourceTrack: selectedAudioTrack,
                         backgroundTrack: meCandidate,
                         strategy: strategy,
-                        projectURL: projectURL
+                        projectURL: projectURL,
+                        timelineStart: preparationStart,
+                        timelineDuration: preparationDuration
                     )
                     finishMovieAudioPreparation(workingDirectory: workingDirectory)
 
@@ -427,6 +696,8 @@ final class ProjectController {
                             from: sourceURL,
                             audioTrackIndex: audioTrackIndex,
                             mode: .centerReference,
+                            startTime: preparationStart,
+                            duration: preparationDuration,
                             destination: centerReferenceURL
                         )
                         dialogueInputURL = centerReferenceURL
@@ -452,7 +723,9 @@ final class ProjectController {
                                     sourceTrack: selectedAudioTrack,
                                     backgroundTrack: nil,
                                     strategy: strategy,
-                                    projectURL: projectURL
+                                    projectURL: projectURL,
+                                    timelineStart: preparationStart,
+                                    timelineDuration: preparationDuration
                                 )
                                 finishMovieAudioPreparation(workingDirectory: workingDirectory)
                             } catch {
@@ -489,20 +762,34 @@ final class ProjectController {
             continuousDubPreviewActive = false
         } else {
             recording.stopTakePlayback()
-            playback.togglePlayback()
             continuousDubPreviewActive = mainPlaybackMode == .dubbed
-            if continuousDubPreviewActive {
-                synchronizeContinuousDubPreview(at: playback.currentTime)
+            let range = projectPlaybackRange
+            if project?.mediaScope.mode == .clip {
+                let start = range.contains(playback.currentTime)
+                    && playback.currentTime < range.upperBound - 0.05
+                    ? playback.currentTime
+                    : range.lowerBound
+                playback.play(from: start, to: range.upperBound) { [weak self] in
+                    guard let self, continuousDubPreviewActive else { return }
+                    synchronizeContinuousDubPreview(at: start)
+                }
+            } else {
+                playback.togglePlayback()
+                if continuousDubPreviewActive {
+                    synchronizeContinuousDubPreview(at: playback.currentTime)
+                }
             }
         }
     }
 
     func seekMainPlayback(to time: TimeInterval) {
         stopContinuousDubOverlay()
-        playback.seek(to: time)
+        let range = projectPlaybackRange
+        let clampedTime = min(max(time, range.lowerBound), range.upperBound)
+        playback.seek(to: clampedTime)
         continuousDubPreviewActive = playback.isPlaying && mainPlaybackMode == .dubbed
         if continuousDubPreviewActive {
-            synchronizeContinuousDubPreview(at: time)
+            synchronizeContinuousDubPreview(at: clampedTime)
         }
     }
 
@@ -529,6 +816,13 @@ final class ProjectController {
     func updateCleanBackgroundVolume(_ volume: Float) {
         guard var project else { return }
         project.settings.cleanBackgroundVolume = min(max(volume, 0), 1)
+        self.project = project
+        save()
+    }
+
+    func updateAudioPreparationPreference(_ preference: AudioPreparationPreference) {
+        guard var project else { return }
+        project.settings.audioPreparationPreference = preference
         self.project = project
         save()
     }
@@ -710,6 +1004,10 @@ final class ProjectController {
         let duration = playback.duration
         switch exportController.exportType {
         case .finishedMovie:
+            if project.mediaScope.mode == .clip {
+                let range = project.mediaScope.resolvedRange(sourceDuration: duration)
+                return .continuous(ExportTimeRange(start: range.lowerBound, end: range.upperBound))
+            }
             return .finishedMovie
 
         case .continuousClip:
@@ -735,7 +1033,10 @@ final class ProjectController {
                     end: exportController.customEndTime
                 )
             }
-            guard range.start >= 0, range.end <= duration, range.duration > 0 else {
+            let bounds = project.mediaScope.resolvedRange(sourceDuration: duration)
+            guard range.start >= bounds.lowerBound,
+                  range.end <= bounds.upperBound,
+                  range.duration > 0 else {
                 throw ExportError.invalidTimeRange
             }
             return .continuous(range)
@@ -772,9 +1073,11 @@ final class ProjectController {
         end: TimeInterval,
         duration: TimeInterval
     ) -> ExportTimeRange {
-        ExportTimeRange(
-            start: max(0, start - exportController.contextDuration),
-            end: min(duration, end + exportController.contextDuration)
+        let bounds = project?.mediaScope.resolvedRange(sourceDuration: duration)
+            ?? (0...max(duration, 0))
+        return ExportTimeRange(
+            start: max(bounds.lowerBound, start - exportController.contextDuration),
+            end: min(bounds.upperBound, end + exportController.contextDuration)
         )
     }
 
@@ -855,23 +1158,40 @@ final class ProjectController {
         return "\(projectName) – \(suffix).mp4"
     }
 
-    private func createProjectForDroppedVideo(_ videoURL: URL) {
-        let panel = NSSavePanel()
-        panel.title = "Save New DubLab Project"
-        panel.prompt = "Create"
-        panel.allowedContentTypes = [.dubLabProject]
-        panel.canCreateDirectories = true
-        panel.nameFieldStringValue = videoURL.deletingPathExtension().lastPathComponent + ".dublab"
+    private func beginNewProjectSetup(with videoURL: URL) {
+        guard !isInspectingNewMovie else { return }
+        dismissNewProjectAssistant()
+        isInspectingNewMovie = true
+        let didStartAccess = videoURL.startAccessingSecurityScopedResource()
+        if didStartAccess { pendingNewVideoURL = videoURL }
 
-        guard panel.runModal() == .OK, let selectedURL = panel.url else { return }
-        let packageURL = selectedURL.pathExtension.lowercased() == "dublab"
-            ? selectedURL
-            : selectedURL.appendingPathExtension("dublab")
-        let name = packageURL.deletingPathExtension().lastPathComponent
-
-        Task {
-            guard await createProject(named: name, at: packageURL) else { return }
-            await importVideo(at: videoURL)
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                var metadata: VideoMetadata
+                do {
+                    metadata = try await metadataLoader.load(from: videoURL)
+                } catch {
+                    metadata = try await ffmpegService.mediaMetadata(in: videoURL)
+                }
+                if let tracks = try? await ffmpegService.audioTracks(in: videoURL), !tracks.isEmpty {
+                    metadata.audioTracks = tracks
+                }
+                guard !metadata.audioTracks.isEmpty else {
+                    throw NewProjectSetupError.noAudioTracks
+                }
+                let subtitles = (try? await ffmpegService.embeddedSubtitleTracks(in: videoURL)) ?? []
+                newProjectDraft = NewProjectDraft(
+                    sourceURL: videoURL,
+                    metadata: metadata,
+                    embeddedSubtitleTracks: subtitles
+                )
+                isInspectingNewMovie = false
+            } catch {
+                isInspectingNewMovie = false
+                dismissNewProjectAssistant()
+                present(error, fallback: "The selected movie could not be inspected.")
+            }
         }
     }
 
@@ -916,6 +1236,8 @@ final class ProjectController {
             await refreshEmbeddedSubtitleTracks()
             if let firstSegment = project?.segments.first {
                 selectSegment(firstSegment.id)
+            } else if project?.mediaScope.mode == .clip {
+                playback.seek(to: projectPlaybackRange.lowerBound)
             }
             recentProjects.recordOpened(project: loadedProject, at: url)
             logger.info("Opened project \(loadedProject.name, privacy: .public)")
@@ -925,8 +1247,9 @@ final class ProjectController {
         }
     }
 
-    private func importVideo(at url: URL) async {
-        guard var project, let projectURL else { return }
+    @discardableResult
+    private func importVideo(at url: URL) async -> Bool {
+        guard var project, let projectURL else { return false }
         isLoadingVideo = true
         defer { isLoadingVideo = false }
 
@@ -969,9 +1292,11 @@ final class ProjectController {
             selectSegment(nil)
             save()
             await refreshEmbeddedSubtitleTracks(sourceURL: url)
+            return true
         } catch {
             if didStartAccess { url.stopAccessingSecurityScopedResource() }
             present(error, fallback: "The selected video could not be opened.")
+            return false
         }
     }
 
@@ -1049,11 +1374,20 @@ final class ProjectController {
     }
 
     private func makeSegments(from cues: [SubtitleCue]) -> [DubSegment] {
-        cues.sorted {
+        let sourceDuration = project?.sourceVideo?.metadata.duration ?? playback.duration
+        let range = project?.mediaScope.resolvedRange(sourceDuration: sourceDuration)
+            ?? (0...max(sourceDuration, 0))
+        return cues.filter {
+            $0.endTime > range.lowerBound && $0.startTime < range.upperBound
+        }.sorted {
             if $0.startTime == $1.startTime { return $0.endTime < $1.endTime }
             return $0.startTime < $1.startTime
         }.map {
-            DubSegment(startTime: $0.startTime, endTime: $0.endTime, text: $0.text)
+            DubSegment(
+                startTime: max($0.startTime, range.lowerBound),
+                endTime: min($0.endTime, range.upperBound),
+                text: $0.text
+            )
         }
     }
 
@@ -1194,18 +1528,22 @@ final class ProjectController {
         projectURL?.appending(path: "prepared-audio").appending(path: fileName)
     }
 
-    private func preparedMovieAudioURLs() -> (dialogue: URL, background: URL)? {
+    private func preparedMovieAudioURLs() -> (
+        dialogue: URL,
+        background: URL,
+        timelineStart: TimeInterval
+    )? {
         guard let asset = preparedAudioAsset,
               let dialogue = preparedAudioURL(fileName: asset.dialogueFileName),
               let background = preparedAudioURL(fileName: asset.backgroundFileName) else { return nil }
-        return (dialogue, background)
+        return (dialogue, background, asset.timelineStart)
     }
 
     private func cleanBackgroundPlaybackAsset(
         for segment: DubSegment
     ) -> (url: URL, offset: TimeInterval)? {
         if let urls = preparedMovieAudioURLs() {
-            return (urls.background, segment.startTime)
+            return (urls.background, max(0, segment.startTime - urls.timelineStart))
         }
         return nil
     }
@@ -1216,7 +1554,9 @@ final class ProjectController {
         sourceTrack: AudioTrackMetadata,
         backgroundTrack: AudioTrackMetadata?,
         strategy: AudioPreparationStrategy,
-        projectURL: URL
+        projectURL: URL,
+        timelineStart: TimeInterval,
+        timelineDuration: TimeInterval
     ) throws {
         let relativeDirectory = sourceTrack.id
         let relativeDialogue = "\(relativeDirectory)/dialogue.wav"
@@ -1243,7 +1583,9 @@ final class ProjectController {
                 strategy: strategy,
                 dialogueFileName: relativeDialogue,
                 backgroundFileName: relativeBackground,
-                modelID: preparedAudioModelID(strategy: strategy)
+                modelID: preparedAudioModelID(strategy: strategy),
+                timelineStart: timelineStart,
+                timelineDuration: timelineDuration
             )
         )
         project.modifiedAt = Date()
@@ -1324,12 +1666,12 @@ final class ProjectController {
             playbackVolumeRampTask?.cancel()
             playback.player.volume = 0
             if recording.isPreparedMoviePlaying {
-                recording.synchronizePreparedMoviePlayback(to: time)
+                recording.synchronizePreparedMoviePlayback(to: max(0, time - preparedURLs.timelineStart))
             } else {
                 recording.startPreparedMoviePlayback(
                     dialogueURL: preparedURLs.dialogue,
                     backgroundURL: preparedURLs.background,
-                    at: time,
+                    at: max(0, time - preparedURLs.timelineStart),
                     dialogueGain: 1,
                     backgroundGain: project.settings.cleanBackgroundVolume
                 )
@@ -1613,6 +1955,17 @@ enum SourceVideoError: LocalizedError {
 
     var errorDescription: String? {
         "The original movie file has moved or is no longer accessible."
+    }
+}
+
+enum NewProjectSetupError: LocalizedError {
+    case noAudioTracks
+
+    var errorDescription: String? {
+        switch self {
+        case .noAudioTracks:
+            "The selected movie does not contain an audio track that can be prepared for dubbing."
+        }
     }
 }
 

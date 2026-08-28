@@ -58,7 +58,7 @@ private struct DubbingInspectorView: View {
                         .font(.callout.weight(.medium))
                         .lineLimit(4)
                     HStack {
-                        Text("\(TimeFormatter.playbackTime(segment.startTime)) – \(TimeFormatter.playbackTime(segment.endTime))")
+                        Text("\(TimeFormatter.playbackTime(controller.projectDisplayTime(segment.startTime))) – \(TimeFormatter.playbackTime(controller.projectDisplayTime(segment.endTime)))")
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -295,6 +295,13 @@ private struct DubbingInspectorView: View {
             Button("Cancel", role: .cancel) {
                 controller.cancelSourceSeparation()
             }
+        } else if controller.project?.settings.audioPreparationPreference == .duckingOnly {
+            Label("Using original-audio ducking", systemImage: "speaker.wave.1")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Text("Choose another preparation method in the Audio inspector to create a clean background.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         } else {
             let isPrepared = controller.hasCleanBackgroundForSelectedTrack(segment)
             if isPrepared {
@@ -457,8 +464,8 @@ private struct DialogueInspectorView: View {
                 Section("Selected Line") {
                     Text(segment.text)
                         .textSelection(.enabled)
-                    LabeledContent("Start", value: TimeFormatter.playbackTime(segment.startTime))
-                    LabeledContent("End", value: TimeFormatter.playbackTime(segment.endTime))
+                    LabeledContent("Start", value: TimeFormatter.playbackTime(controller.projectDisplayTime(segment.startTime)))
+                    LabeledContent("End", value: TimeFormatter.playbackTime(controller.projectDisplayTime(segment.endTime)))
                     LabeledContent("Duration", value: TimeFormatter.playbackTime(segment.duration))
                 }
             }
@@ -501,6 +508,14 @@ private struct AudioInspectorView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                Picker("Method", selection: preparationPreference) {
+                    ForEach(AudioPreparationPreference.allCases) { preference in
+                        Text(preference.title)
+                            .tag(preference)
+                            .disabled(!controller.supportsAudioPreparationPreference(preference))
+                    }
+                }
+
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("Background level")
@@ -542,6 +557,12 @@ private struct AudioInspectorView: View {
             Button("Cancel", role: .cancel) {
                 controller.cancelSourceSeparation()
             }
+        } else if controller.project?.settings.audioPreparationPreference == .duckingOnly {
+            Label("Using original-audio ducking", systemImage: "speaker.wave.1")
+                .foregroundStyle(.secondary)
+            Text("No background preparation is required. The original voice will remain quieter underneath recorded takes.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         } else if controller.project?.sourceVideo != nil {
             let isPrepared = controller.preparedAudioAsset != nil
             if isPrepared {
@@ -576,6 +597,13 @@ private struct AudioInspectorView: View {
         )
     }
 
+    private var preparationPreference: Binding<AudioPreparationPreference> {
+        Binding(
+            get: { controller.project?.settings.audioPreparationPreference ?? .automatic },
+            set: { controller.updateAudioPreparationPreference($0) }
+        )
+    }
+
     private func trackLabel(_ track: AudioTrackMetadata) -> String {
         [
             track.title,
@@ -587,7 +615,10 @@ private struct AudioInspectorView: View {
     }
 
     private var preparationDescription: String {
-        switch controller.recommendedAudioPreparationStrategy {
+        guard let strategy = controller.selectedAudioPreparationStrategy else {
+            return "Keep the selected source mix and lower it beneath accepted takes. This is immediate, but the original dialogue remains audible."
+        }
+        switch strategy {
         case .embeddedMusicAndEffects:
             let name = controller.musicAndEffectsCandidate?.title ?? "the detected M&E track"
             return "Use \(name) as the continuous background and derive a synchronized dialogue guide without AI."
@@ -616,7 +647,10 @@ private struct ProjectInspectorView: View {
             if let source = controller.project?.sourceVideo {
                 Section("Source Video") {
                     LabeledContent("File", value: source.displayName)
-                    LabeledContent("Duration", value: TimeFormatter.playbackTime(source.metadata.duration))
+                    LabeledContent("Project duration", value: TimeFormatter.playbackTime(controller.projectDuration))
+                    if controller.project?.mediaScope.mode == .clip {
+                        LabeledContent("Source duration", value: TimeFormatter.playbackTime(source.metadata.duration))
+                    }
                     LabeledContent("Resolution", value: "\(source.metadata.width) × \(source.metadata.height)")
                     if let frameRate = source.metadata.frameRate {
                         LabeledContent(
@@ -696,7 +730,7 @@ private struct ExportInspectorView: View {
         }
         .formStyle(.grouped)
         .onAppear {
-            exporter.configure(for: controller.playback.duration)
+            exporter.configure(for: controller.projectPlaybackRange)
         }
     }
 
@@ -707,8 +741,11 @@ private struct ExportInspectorView: View {
         switch exporter.exportType {
         case .finishedMovie:
             Section("Scope") {
-                LabeledContent("Range", value: "Entire movie")
-                LabeledContent("Duration", value: TimeFormatter.playbackTime(controller.playback.duration))
+                LabeledContent(
+                    "Range",
+                    value: controller.project?.mediaScope.mode == .clip ? "Project clip" : "Entire movie"
+                )
+                LabeledContent("Duration", value: TimeFormatter.playbackTime(controller.projectDuration))
                 Text("Unfinished lines keep their original audio.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -723,8 +760,8 @@ private struct ExportInspectorView: View {
                 }
 
                 if exporter.clipRangeMode == .custom {
-                    TextField("Start (seconds)", value: $exporter.customStartTime, format: .number)
-                    TextField("End (seconds)", value: $exporter.customEndTime, format: .number)
+                    TextField("Start (seconds)", value: customStartTime(exporter), format: .number)
+                    TextField("End (seconds)", value: customEndTime(exporter), format: .number)
                     HStack {
                         Button("Set Start") {
                             exporter.customStartTime = controller.playback.currentTime
@@ -734,7 +771,7 @@ private struct ExportInspectorView: View {
                         }
                     }
                     Text(
-                        "\(TimeFormatter.playbackTime(exporter.customStartTime)) – \(TimeFormatter.playbackTime(exporter.customEndTime))"
+                        "\(TimeFormatter.playbackTime(controller.projectDisplayTime(exporter.customStartTime))) – \(TimeFormatter.playbackTime(controller.projectDisplayTime(exporter.customEndTime)))"
                     )
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -802,7 +839,7 @@ private struct ExportInspectorView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("\(index + 1). \(segment.text.replacingOccurrences(of: "\n", with: " "))")
                                 .lineLimit(2)
-                            Text("\(TimeFormatter.playbackTime(segment.startTime)) · \(segment.status.rawValue.capitalized)")
+                            Text("\(TimeFormatter.playbackTime(controller.projectDisplayTime(segment.startTime))) · \(segment.status.rawValue.capitalized)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -812,6 +849,20 @@ private struct ExportInspectorView: View {
                 .disabled(!canSelect)
             }
         }
+    }
+
+    private func customStartTime(_ exporter: ExportController) -> Binding<TimeInterval> {
+        Binding(
+            get: { controller.projectDisplayTime(exporter.customStartTime) },
+            set: { exporter.customStartTime = controller.projectPlaybackRange.lowerBound + max($0, 0) }
+        )
+    }
+
+    private func customEndTime(_ exporter: ExportController) -> Binding<TimeInterval> {
+        Binding(
+            get: { controller.projectDisplayTime(exporter.customEndTime) },
+            set: { exporter.customEndTime = controller.projectPlaybackRange.lowerBound + max($0, 0) }
+        )
     }
 
     @ViewBuilder

@@ -252,10 +252,10 @@ enum ExportCommandBuilder {
             // background never switches at subtitle boundaries; only dialogue is
             // automated, eliminating the per-line separation seam.
             filters.append(
-                "[\(preparedInputs.dialogue):a:0]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,volume='\(combinedVolumeExpression(lines: job.lines, duckedVolume: Double(job.duckedOriginalVolume)))':eval=frame[preparedDialogue]"
+                "[\(preparedInputs.dialogue):a:0]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,adelay=delays=\(milliseconds(job.preparedAudioTimelineStart)):all=1,volume='\(combinedVolumeExpression(lines: job.lines, duckedVolume: Double(job.duckedOriginalVolume)))':eval=frame[preparedDialogue]"
             )
             filters.append(
-                "[\(preparedInputs.background):a:0]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,volume=\(number(Double(job.preparedBackgroundGain))),volume='\(preparedBackgroundVolumeExpression(lines: job.lines))':eval=frame[preparedBackground]"
+                "[\(preparedInputs.background):a:0]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,adelay=delays=\(milliseconds(job.preparedAudioTimelineStart)):all=1,volume=\(number(Double(job.preparedBackgroundGain))),volume='\(preparedBackgroundVolumeExpression(lines: job.lines))':eval=frame[preparedBackground]"
             )
             filters.append(
                 "[preparedDialogue][preparedBackground]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[\(baseLabel)]"

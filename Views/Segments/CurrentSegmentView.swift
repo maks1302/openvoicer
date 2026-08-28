@@ -11,7 +11,7 @@ struct CurrentSegmentView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(TimeFormatter.playbackTime(segment.startTime)) – \(TimeFormatter.playbackTime(segment.endTime))")
+                    Text("\(TimeFormatter.playbackTime(controller.projectDisplayTime(segment.startTime))) – \(TimeFormatter.playbackTime(controller.projectDisplayTime(segment.endTime)))")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }

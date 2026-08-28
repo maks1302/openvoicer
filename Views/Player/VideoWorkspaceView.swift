@@ -78,12 +78,18 @@ private struct PlaybackControls: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            Slider(value: playbackPosition, in: 0...max(playback.duration, 0.01))
+            Slider(
+                value: playbackPosition,
+                in: controller.projectPlaybackRange.lowerBound...max(
+                    controller.projectPlaybackRange.upperBound,
+                    controller.projectPlaybackRange.lowerBound + 0.01
+                )
+            )
                 .disabled(playback.duration <= 0)
 
             ZStack {
                 HStack(spacing: 12) {
-                    Text(TimeFormatter.playbackTime(playback.currentTime))
+                    Text(TimeFormatter.playbackTime(controller.projectDisplayTime(playback.currentTime)))
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                         .frame(width: 64, alignment: .leading)
@@ -100,7 +106,7 @@ private struct PlaybackControls: View {
                     .frame(width: 150)
                     .help("Choose whether the main player uses source audio or accepted line versions")
 
-                    Text(TimeFormatter.playbackTime(playback.duration))
+                    Text(TimeFormatter.playbackTime(controller.projectDuration))
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                         .frame(width: 64, alignment: .trailing)

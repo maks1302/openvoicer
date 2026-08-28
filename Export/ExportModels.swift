@@ -100,6 +100,7 @@ struct ExportJob: Sendable {
     var preparedDialogueURL: URL? = nil
     var preparedBackgroundURL: URL? = nil
     var preparedBackgroundGain: Float = 1
+    var preparedAudioTimelineStart: TimeInterval = 0
 }
 
 enum ExportError: LocalizedError {
@@ -123,7 +124,7 @@ enum ExportError: LocalizedError {
         case .noAcceptedLines:
             "There are no accepted dubbed lines to export."
         case .cleanBackgroundUnavailable:
-            "An accepted Clean Dub line no longer has a matching clean background. Reprocess that line or accept a different result."
+            "The prepared background audio is no longer available. Prepare the movie audio again or accept a different result."
         case .invalidTimeRange:
             "The export end time must be after the start time and inside the movie."
         case .couldNotLaunch(let details):
