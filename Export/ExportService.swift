@@ -169,6 +169,11 @@ private actor ExportDiagnostics {
 }
 
 enum ExportCommandBuilder {
+    // Long enough to hide ambience changes at separation boundaries without
+    // noticeably moving the timing of a spoken line.
+    private static let transitionDuration: TimeInterval = 0.12
+    private static let takeEdgeFadeDuration: TimeInterval = 0.015
+
     static func arguments(for job: ExportJob, softwareVideoEncoding: Bool = false) -> [String] {
         var arguments = ["-hide_banner", "-nostdin", "-y", "-i", job.sourceURL.path]
         var inputs: [UUID: (take: Int, background: Int?)] = [:]
@@ -233,23 +238,15 @@ enum ExportCommandBuilder {
         // Normalize it before placing zero-based take inputs on the movie timeline.
         filters.append("[0:a:\(job.audioTrackIndex)]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS[base0]")
 
-        var baseLabel = "base0"
-        for (index, line) in job.lines.enumerated() {
-            let nextLabel = "base\(index + 1)"
-            let target: Double = switch line.treatment {
-            case .duckedMix: Double(job.duckedOriginalVolume)
-            case .cleanDub, .takeOnly: 0
-            }
-            filters.append("[\(baseLabel)]volume='\(volumeExpression(start: line.startTime, end: line.endTime, target: target))':eval=frame[\(nextLabel)]")
-            baseLabel = nextLabel
-        }
+        let baseLabel = "base"
+        filters.append("[base0]volume='\(combinedVolumeExpression(lines: job.lines, duckedVolume: Double(job.duckedOriginalVolume)))':eval=frame[\(baseLabel)]")
 
         var mixLabels = [baseLabel]
         for (index, line) in job.lines.enumerated() {
             guard let input = inputs[line.segmentID] else { continue }
             let voiceDuration = min(line.duration, line.takeDuration)
             if voiceDuration > 0 {
-                let fade = min(0.05, voiceDuration / 2)
+                let fade = min(takeEdgeFadeDuration, voiceDuration / 2)
                 let fadeOut = max(voiceDuration - fade, 0)
                 let label = "voice\(index)"
                 filters.append(
@@ -259,11 +256,30 @@ enum ExportCommandBuilder {
             }
 
             if let backgroundInput = input.background {
-                let fade = min(0.05, line.duration / 2)
-                let fadeOut = max(line.duration - fade, 0)
+                // Clean stems are extracted with context. Include that context in
+                // the export so it crossfades *over* the source ambience instead
+                // of fading both tracks down at the subtitle boundary.
+                let leadingTransition = min(transitionDuration, line.backgroundPreRoll, line.startTime)
+                let trailingTransition = transitionDuration
+                let backgroundStart = line.backgroundPreRoll - leadingTransition
+                let backgroundDuration = leadingTransition + line.duration + trailingTransition
+                let fadeOut = max(backgroundDuration - trailingTransition, 0)
+                let timelineStart = line.startTime - leadingTransition
                 let label = "background\(index)"
+                var backgroundFilters = [
+                    "atrim=start=\(number(backgroundStart)):end=\(number(backgroundStart + backgroundDuration))",
+                    "asetpts=PTS-STARTPTS",
+                    "aresample=48000",
+                    "aformat=sample_fmts=fltp:channel_layouts=stereo",
+                    "volume=\(number(Double(line.backgroundGain)))"
+                ]
+                if leadingTransition > 0 {
+                    backgroundFilters.append("afade=t=in:st=0:d=\(number(leadingTransition))")
+                }
+                backgroundFilters.append("afade=t=out:st=\(number(fadeOut)):d=\(number(trailingTransition))")
+                backgroundFilters.append("adelay=delays=\(milliseconds(timelineStart)):all=1")
                 filters.append(
-                    "[\(backgroundInput):a:0]atrim=start=\(number(line.backgroundPreRoll)):end=\(number(line.backgroundPreRoll + line.duration)),asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=\(number(Double(line.backgroundGain))),afade=t=in:st=0:d=\(number(fade)),afade=t=out:st=\(number(fadeOut)):d=\(number(fade)),adelay=delays=\(milliseconds(line.startTime)):all=1[\(label)]"
+                    "[\(backgroundInput):a:0]\(backgroundFilters.joined(separator: ","))[\(label)]"
                 )
                 mixLabels.append(label)
             }
@@ -303,11 +319,39 @@ enum ExportCommandBuilder {
         return filters.joined(separator: ";")
     }
 
-    private static func volumeExpression(start: TimeInterval, end: TimeInterval, target: Double) -> String {
-        let fade = 0.08
-        let fadeStart = max(0, start - fade)
-        let fadeEnd = end + fade
-        return "if(lt(t,\(number(fadeStart))),1,if(lt(t,\(number(start))),1-(1-\(number(target)))*(t-\(number(fadeStart)))/\(number(max(start - fadeStart, 0.001))),if(lt(t,\(number(end))),\(number(target)),if(lt(t,\(number(fadeEnd))),\(number(target))+(1-\(number(target)))*(t-\(number(end)))/\(number(fade)),1))))"
+    private static func combinedVolumeExpression(
+        lines: [ExportLineAsset],
+        duckedVolume: Double
+    ) -> String {
+        guard !lines.isEmpty else { return "1" }
+
+        // Taking the minimum of all line envelopes avoids multiplying gains in
+        // overlaps. Adjacent lines consequently stay ducked instead of briefly
+        // rising and falling between subtitle events.
+        return lines.map { line in
+            let target: Double = switch line.treatment {
+            case .duckedMix: duckedVolume
+            case .cleanDub, .takeOnly: 0
+            }
+            return volumeExpression(
+                start: line.startTime,
+                end: line.endTime,
+                target: target,
+                transition: transitionDuration
+            )
+        }.reduce("1") { "min(\($0),\($1))" }
+    }
+
+    private static func volumeExpression(
+        start: TimeInterval,
+        end: TimeInterval,
+        target: Double,
+        transition: TimeInterval
+    ) -> String {
+        let fadeStart = max(0, start - transition)
+        let fadeInDuration = max(start - fadeStart, 0.001)
+        let fadeEnd = end + transition
+        return "if(lt(t,\(number(fadeStart))),1,if(lt(t,\(number(start))),1-(1-\(number(target)))*(t-\(number(fadeStart)))/\(number(fadeInDuration)),if(lt(t,\(number(end))),\(number(target)),if(lt(t,\(number(fadeEnd))),\(number(target))+(1-\(number(target)))*(t-\(number(end)))/\(number(transition)),1))))"
     }
 
     private static func milliseconds(_ time: TimeInterval) -> Int {

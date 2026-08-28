@@ -98,14 +98,19 @@ final class RecordingController {
         at url: URL,
         gain: Float,
         timelineDuration: TimeInterval? = nil,
-        startOffset: TimeInterval = 0
+        startOffset: TimeInterval = 0,
+        fadeInDuration: TimeInterval = 0.015
     ) throws {
         stopTakePlayback()
         let player = try AVAudioPlayer(contentsOf: url)
-        player.volume = min(max(gain, 0), 1)
+        let targetVolume = min(max(gain, 0), 1)
+        player.volume = fadeInDuration > 0 ? 0 : targetVolume
         player.currentTime = min(max(startOffset, 0), player.duration)
         player.prepareToPlay()
         guard player.play() else { throw RecordingPlaybackError.couldNotPlay }
+        if fadeInDuration > 0 {
+            player.setVolume(targetVolume, fadeDuration: fadeInDuration)
+        }
         audioPlayer = player
         playingTakeID = id
         takePlaybackElapsed = player.currentTime
@@ -132,13 +137,17 @@ final class RecordingController {
         backgroundOffset: TimeInterval,
         backgroundGain: Float,
         startOffset: TimeInterval = 0,
-        timelineDuration: TimeInterval? = nil
+        timelineDuration: TimeInterval? = nil,
+        voiceFadeInDuration: TimeInterval = 0.015,
+        backgroundFadeInDuration: TimeInterval = 0.015
     ) throws {
         stopTakePlayback()
         let voice = try AVAudioPlayer(contentsOf: takeURL)
         let background = try AVAudioPlayer(contentsOf: backgroundURL)
-        voice.volume = min(max(takeGain, 0), 1)
-        background.volume = min(max(backgroundGain, 0), 1)
+        let voiceTargetVolume = min(max(takeGain, 0), 1)
+        let backgroundTargetVolume = min(max(backgroundGain, 0), 1)
+        voice.volume = voiceFadeInDuration > 0 ? 0 : voiceTargetVolume
+        background.volume = backgroundFadeInDuration > 0 ? 0 : backgroundTargetVolume
         voice.currentTime = min(max(startOffset, 0), voice.duration)
         background.currentTime = min(max(backgroundOffset + startOffset, 0), background.duration)
         voice.prepareToPlay()
@@ -149,6 +158,12 @@ final class RecordingController {
         let voiceStarted = !hasRemainingVoice || voice.play(atTime: deviceTime)
         guard voiceStarted, background.play(atTime: deviceTime) else {
             throw RecordingPlaybackError.couldNotPlay
+        }
+        if hasRemainingVoice, voiceFadeInDuration > 0 {
+            voice.setVolume(voiceTargetVolume, fadeDuration: voiceFadeInDuration)
+        }
+        if backgroundFadeInDuration > 0 {
+            background.setVolume(backgroundTargetVolume, fadeDuration: backgroundFadeInDuration)
         }
         audioPlayer = hasRemainingVoice ? voice : nil
         backgroundPlayer = background
@@ -177,6 +192,29 @@ final class RecordingController {
         backgroundPlayer = nil
         playingTakeID = nil
         takePlaybackElapsed = 0
+    }
+
+    func transitionOutTakePlayback(
+        voiceDuration: TimeInterval = 0.015,
+        backgroundDuration: TimeInterval = 0.12
+    ) {
+        playbackCompletionTask?.cancel()
+        playbackCompletionTask = nil
+        let voice = audioPlayer
+        let background = backgroundPlayer
+        audioPlayer = nil
+        backgroundPlayer = nil
+        playingTakeID = nil
+        takePlaybackElapsed = 0
+
+        voice?.setVolume(0, fadeDuration: voiceDuration)
+        background?.setVolume(0, fadeDuration: backgroundDuration)
+        let stopDelay = max(voiceDuration, backgroundDuration)
+        Task {
+            try? await Task.sleep(for: .seconds(stopDelay))
+            voice?.stop()
+            background?.stop()
+        }
     }
 
     private func appendLiveSample(_ level: Float, at elapsed: TimeInterval) {

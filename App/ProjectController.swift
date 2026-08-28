@@ -8,6 +8,7 @@ import UniformTypeIdentifiers
 @Observable
 final class ProjectController {
     private static let playbackPreparationVersion = 2
+    private static let liveMixTransitionDuration: TimeInterval = 0.12
     enum MainPlaybackMode: String, CaseIterable, Identifiable {
         case original
         case dubbed
@@ -57,6 +58,7 @@ final class ProjectController {
     @ObservationIgnored private var cleanBackgroundPreparationTask: Task<Void, Never>?
     @ObservationIgnored private var continuousDubPreviewActive = false
     @ObservationIgnored private var activeDubbedSegmentID: UUID?
+    @ObservationIgnored private var playbackVolumeRampTask: Task<Void, Never>?
 
     init() {
         playback.onPlaybackStopped = { [weak self] in
@@ -1192,13 +1194,25 @@ final class ProjectController {
         }
         guard segment?.id != activeDubbedSegmentID else { return }
 
-        stopContinuousDubOverlay()
+        recording.transitionOutTakePlayback(
+            backgroundDuration: Self.liveMixTransitionDuration
+        )
+        activeDubbedSegmentID = nil
         guard let segment,
-              let version = effectiveAcceptedVersion(for: segment) else { return }
+              let version = effectiveAcceptedVersion(for: segment) else {
+            rampPlaybackVolume(
+                to: project.settings.originalVolume,
+                duration: Self.liveMixTransitionDuration
+            )
+            return
+        }
         activeDubbedSegmentID = segment.id
 
         if version.treatment == .original {
-            playback.player.volume = project.settings.originalVolume
+            rampPlaybackVolume(
+                to: project.settings.originalVolume,
+                duration: Self.liveMixTransitionDuration
+            )
             return
         }
 
@@ -1212,29 +1226,34 @@ final class ProjectController {
             case .original:
                 break
             case .duckedMix:
-                playback.player.volume = project.settings.duckedOriginalVolume
+                rampPlaybackVolume(
+                    to: project.settings.duckedOriginalVolume,
+                    duration: Self.liveMixTransitionDuration
+                )
                 if offset < take.duration - 0.01 {
                     try recording.playTake(
                         id: take.id,
                         at: takeURL,
                         gain: take.gain,
                         timelineDuration: segment.duration,
-                        startOffset: offset
+                        startOffset: offset,
+                        fadeInDuration: 0.015
                     )
                 }
             case .takeOnly:
-                playback.player.volume = 0
+                rampPlaybackVolume(to: 0, duration: Self.liveMixTransitionDuration)
                 if offset < take.duration - 0.01 {
                     try recording.playTake(
                         id: take.id,
                         at: takeURL,
                         gain: take.gain,
                         timelineDuration: segment.duration,
-                        startOffset: offset
+                        startOffset: offset,
+                        fadeInDuration: 0.015
                     )
                 }
             case .cleanDub:
-                playback.player.volume = 0
+                rampPlaybackVolume(to: 0, duration: Self.liveMixTransitionDuration)
                 if let asset = segment.separatedBackground,
                    hasCleanBackgroundForSelectedTrack(segment),
                    let backgroundURL = separatedBackgroundURL(for: asset) {
@@ -1246,7 +1265,9 @@ final class ProjectController {
                         backgroundOffset: asset.preRollDuration,
                         backgroundGain: project.settings.cleanBackgroundVolume,
                         startOffset: offset,
-                        timelineDuration: segment.duration
+                        timelineDuration: segment.duration,
+                        voiceFadeInDuration: 0.015,
+                        backgroundFadeInDuration: Self.liveMixTransitionDuration
                     )
                 } else {
                     if offset < take.duration - 0.01 {
@@ -1255,7 +1276,8 @@ final class ProjectController {
                             at: takeURL,
                             gain: take.gain,
                             timelineDuration: segment.duration,
-                            startOffset: offset
+                            startOffset: offset,
+                            fadeInDuration: 0.015
                         )
                     }
                 }
@@ -1267,9 +1289,34 @@ final class ProjectController {
     }
 
     private func stopContinuousDubOverlay() {
+        playbackVolumeRampTask?.cancel()
+        playbackVolumeRampTask = nil
         recording.stopTakePlayback()
         playback.player.volume = project?.settings.originalVolume ?? 1
         activeDubbedSegmentID = nil
+    }
+
+    private func rampPlaybackVolume(to target: Float, duration: TimeInterval) {
+        playbackVolumeRampTask?.cancel()
+        let clampedTarget = min(max(target, 0), 1)
+        let start = playback.player.volume
+        guard duration > 0, abs(start - clampedTarget) > 0.001 else {
+            playback.player.volume = clampedTarget
+            playbackVolumeRampTask = nil
+            return
+        }
+
+        playbackVolumeRampTask = Task { [weak self] in
+            let stepCount = 8
+            for step in 1...stepCount {
+                guard !Task.isCancelled, let self else { return }
+                try? await Task.sleep(for: .seconds(duration / Double(stepCount)))
+                guard !Task.isCancelled else { return }
+                let progress = Float(step) / Float(stepCount)
+                playback.player.volume = start + (clampedTarget - start) * progress
+            }
+            self?.playbackVolumeRampTask = nil
+        }
     }
 
     private func restoreSourceVideoIfPresent() async throws {
