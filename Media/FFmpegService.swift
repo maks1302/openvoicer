@@ -124,6 +124,46 @@ actor FFmpegService {
         }
     }
 
+    func audioTracks(in source: URL) async throws -> [AudioTrackMetadata] {
+        guard let executableURL = Self.findExecutable(named: "ffprobe") else {
+            throw FFmpegError.notInstalled
+        }
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "DubLab-AudioProbe-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let outputURL = temporaryDirectory.appending(path: "audio-tracks.json")
+        let logURL = temporaryDirectory.appending(path: "ffprobe.log")
+        let arguments = [
+            "-v", "error",
+            "-select_streams", "a",
+            "-show_entries", "stream=codec_name,channels:stream_tags=language,title",
+            "-of", "json",
+            "-i", "pipe:0"
+        ]
+        let result = try await Task.detached(priority: .utility) {
+            try MediaProcess.run(
+                executableURL: executableURL,
+                arguments: arguments,
+                inputURL: source,
+                outputURL: outputURL,
+                logURL: logURL
+            )
+        }.value
+        guard result.exitCode == 0 else { throw FFmpegError.probeFailed }
+        let data = try Data(contentsOf: outputURL)
+        let probe = try JSONDecoder().decode(FFprobeAudioOutput.self, from: data)
+        return probe.streams.enumerated().map { index, stream in
+            AudioTrackMetadata(
+                id: "audio-\(index)",
+                title: stream.tags?.title?.nilIfEmpty ?? "Audio \(index + 1)",
+                languageCode: stream.tags?.language?.nilIfEmpty,
+                codec: stream.codecName,
+                channelCount: stream.channels
+            )
+        }
+    }
+
     func extractSubtitleTrack(
         _ track: EmbeddedSubtitleTrack,
         from source: URL,
@@ -206,6 +246,82 @@ actor FFmpegService {
         }
     }
 
+    func extractAudioTrack(
+        from source: URL,
+        audioTrackIndex: Int,
+        mode: AudioTrackExtractionMode,
+        destination: URL
+    ) async throws {
+        guard let executableURL = Self.findExecutable(named: "ffmpeg") else {
+            throw FFmpegError.notInstalled
+        }
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let logURL = destination.deletingLastPathComponent().appending(path: "ffmpeg-audio-preparation.log")
+        var arguments = [
+            "-hide_banner", "-nostdin", "-y",
+            "-i", "pipe:0",
+            "-map", "0:a:\(audioTrackIndex)",
+            "-vn", "-sn"
+        ]
+        switch mode {
+        case .stereoMix:
+            arguments += ["-ac", "2"]
+        case .centerReference:
+            arguments += ["-af", "pan=mono|c0=FC", "-ac", "1"]
+        }
+        arguments += ["-ar", "48000", "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"]
+
+        let result = try await Task.detached(priority: .userInitiated) {
+            try MediaProcess.run(
+                executableURL: executableURL,
+                arguments: arguments,
+                inputURL: source,
+                outputURL: destination,
+                logURL: logURL
+            )
+        }.value
+        guard result.exitCode == 0 else {
+            throw FFmpegError.audioExtractionFailed(details: result.errorSummary)
+        }
+    }
+
+    func createDialogueDifference(
+        originalURL: URL,
+        backgroundURL: URL,
+        destination: URL
+    ) async throws {
+        guard let executableURL = Self.findExecutable(named: "ffmpeg") else {
+            throw FFmpegError.notInstalled
+        }
+        let logURL = destination.deletingLastPathComponent().appending(path: "ffmpeg-me-difference.log")
+        let arguments = [
+            "-hide_banner", "-nostdin", "-y",
+            "-i", originalURL.path,
+            "-i", backgroundURL.path,
+            "-filter_complex",
+            "[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[o];[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[b];[o][b]amix=inputs=2:weights=1\\ -1:normalize=0:duration=first[d]",
+            "-map", "[d]",
+            // The mathematical difference can exceed ±1 even though adding it
+            // back to M&E reconstructs the source. Float PCM preserves that
+            // headroom instead of clipping one stem independently.
+            "-c:a", "pcm_f32le",
+            destination.path
+        ]
+        let result = try await Task.detached(priority: .userInitiated) {
+            try MediaProcess.runWithoutStreamingInput(
+                executableURL: executableURL,
+                arguments: arguments,
+                logURL: logURL
+            )
+        }.value
+        guard result.exitCode == 0 else {
+            throw FFmpegError.audioExtractionFailed(details: result.errorSummary)
+        }
+    }
+
     private nonisolated static func findExecutable(named name: String) -> URL? {
         let fileManager = FileManager.default
         let candidates = [
@@ -217,6 +333,11 @@ actor FFmpegService {
 
         return candidates.first { fileManager.isExecutableFile(atPath: $0.path) }
     }
+}
+
+enum AudioTrackExtractionMode: Sendable {
+    case stereoMix
+    case centerReference
 }
 
 private enum MediaProcess {
@@ -254,6 +375,32 @@ private enum MediaProcess {
             throw FFmpegError.couldNotLaunch(error.localizedDescription)
         }
 
+        let errorSummary = (try? String(contentsOf: logURL, encoding: .utf8))
+            .map { String($0.suffix(2_000)) } ?? "No diagnostic output was produced."
+        return MediaProcessResult(exitCode: process.terminationStatus, errorSummary: errorSummary)
+    }
+
+    nonisolated static func runWithoutStreamingInput(
+        executableURL: URL,
+        arguments: [String],
+        logURL: URL
+    ) throws -> MediaProcessResult {
+        _ = FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        let logHandle = try FileHandle(forWritingTo: logURL)
+        try logHandle.truncate(atOffset: 0)
+        defer { try? logHandle.close() }
+
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.standardOutput = logHandle
+        process.standardError = logHandle
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            throw FFmpegError.couldNotLaunch(error.localizedDescription)
+        }
         let errorSummary = (try? String(contentsOf: logURL, encoding: .utf8))
             .map { String($0.suffix(2_000)) } ?? "No diagnostic output was produced."
         return MediaProcessResult(exitCode: process.terminationStatus, errorSummary: errorSummary)
@@ -325,4 +472,28 @@ private struct FFprobeVideoOutput: Decodable {
             case codecName = "codec_name"
         }
     }
+}
+
+private struct FFprobeAudioOutput: Decodable {
+    let streams: [Stream]
+
+    struct Stream: Decodable {
+        let codecName: String?
+        let channels: Int?
+        let tags: Tags?
+
+        enum CodingKeys: String, CodingKey {
+            case codecName = "codec_name"
+            case channels, tags
+        }
+    }
+
+    struct Tags: Decodable {
+        let language: String?
+        let title: String?
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

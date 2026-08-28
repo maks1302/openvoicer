@@ -45,26 +45,9 @@ struct WorkspaceInspectorView: View {
 
 private struct DubbingInspectorView: View {
     @Bindable var controller: ProjectController
-    @State private var bypassedVoiceRemovalSegmentIDs: Set<UUID> = []
 
     var body: some View {
-        ZStack {
-            dubbingForm
-                .blur(radius: showsVoiceRemovalPrompt ? 4 : 0)
-                .allowsHitTesting(!showsVoiceRemovalPrompt)
-
-            if showsVoiceRemovalPrompt, let segment = controller.selectedSegment {
-                voiceRemovalPrompt(segment)
-                    .padding(20)
-                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
-            }
-        }
-        .animation(.easeOut(duration: 0.16), value: showsVoiceRemovalPrompt)
-        .onChange(of: controller.selectedSegmentID) { oldValue, newValue in
-            if oldValue != newValue, let newValue {
-                bypassedVoiceRemovalSegmentIDs.remove(newValue)
-            }
-        }
+        dubbingForm
     }
 
     private var dubbingForm: some View {
@@ -90,13 +73,13 @@ private struct DubbingInspectorView: View {
                 Section("Record") {
                     RecordingActionButton(controller: controller)
                         .frame(maxWidth: .infinity)
-                    if controller.cleaningSegmentID == segment.id {
+                    if controller.isPreparingMovieAudio {
                         HStack(spacing: 8) {
                             ProgressView()
                                 .controlSize(.small)
                             Text(controller.sourceSeparation.isBusy
                                  ? controller.sourceSeparation.message
-                                 : "Preparing audio for voice removal…")
+                                 : controller.audioPreparationMessage)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
@@ -141,7 +124,7 @@ private struct DubbingInspectorView: View {
                         }
                     } else if controller.segmentPreviewMode == .cleanDub,
                               !controller.hasCleanBackgroundForSelectedTrack(segment) {
-                        Label("Remove the original voice before this result can be previewed.", systemImage: "waveform.badge.exclamationmark")
+                        Label("Prepare the movie background before this result can be previewed.", systemImage: "waveform.badge.exclamationmark")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -192,7 +175,7 @@ private struct DubbingInspectorView: View {
                     .disabled(!controller.canAcceptSelectedVersion)
                 }
 
-                Section("Original Voice") {
+                Section("Movie Background") {
                     voiceRemovalControl(segment)
                 }
             } else {
@@ -204,65 +187,6 @@ private struct DubbingInspectorView: View {
             }
         }
         .formStyle(.grouped)
-    }
-
-    private var showsVoiceRemovalPrompt: Bool {
-        guard let segment = controller.selectedSegment else { return false }
-        return !controller.hasCleanBackgroundForSelectedTrack(segment)
-            && !bypassedVoiceRemovalSegmentIDs.contains(segment.id)
-    }
-
-    private func voiceRemovalPrompt(_ segment: DubSegment) -> some View {
-        VStack(spacing: 14) {
-            Image(systemName: "waveform.badge.minus")
-                .font(.system(size: 30, weight: .medium))
-                .foregroundStyle(.tint)
-
-            VStack(spacing: 5) {
-                Text("Remove the Original Voice?")
-                    .font(.headline)
-                Text("Prepare a cleaner background for this line before recording. This runs locally and may take some time.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-
-            if controller.cleaningSegmentID != nil {
-                Text("Another line is already being cleaned in the background. You can continue recording this line now.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                Button("Continue Recording") {
-                    bypassedVoiceRemovalSegmentIDs.insert(segment.id)
-                }
-                .buttonStyle(.borderedProminent)
-            } else {
-                Button {
-                    if controller.prepareCleanBackground() {
-                        bypassedVoiceRemovalSegmentIDs.insert(segment.id)
-                    }
-                } label: {
-                    Label("Remove Original Voice", systemImage: "sparkles")
-                        .frame(maxWidth: .infinity, minHeight: 24)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-
-                Button("Continue Without Cleaning") {
-                    bypassedVoiceRemovalSegmentIDs.insert(segment.id)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-            }
-        }
-        .padding(20)
-        .frame(maxWidth: 300)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(.separator.opacity(0.7), lineWidth: 0.5)
-        }
-        .shadow(color: .black.opacity(0.14), radius: 18, y: 8)
     }
 
     private func takeRow(_ take: RecordingTake, number: Int, selectedID: UUID?) -> some View {
@@ -356,7 +280,7 @@ private struct DubbingInspectorView: View {
 
     @ViewBuilder
     private func voiceRemovalControl(_ segment: DubSegment) -> some View {
-        if controller.cleaningSegmentID == segment.id {
+        if controller.isPreparingMovieAudio {
             if controller.sourceSeparation.isBusy {
                 ProgressView(value: controller.sourceSeparation.progress) {
                     Text(controller.sourceSeparation.message)
@@ -374,21 +298,30 @@ private struct DubbingInspectorView: View {
         } else {
             let isPrepared = controller.hasCleanBackgroundForSelectedTrack(segment)
             if isPrepared {
-                Label("Original voice removed for this line", systemImage: "checkmark.circle.fill")
+                Label("Continuous movie background is ready", systemImage: "checkmark.circle.fill")
                     .font(.callout)
                     .foregroundStyle(.green)
+                if let asset = controller.preparedAudioAsset {
+                    Text(asset.strategy.title)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("Prepare the selected audio track once. You can keep recording while it runs in the background.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Button {
-                controller.prepareCleanBackground()
+                controller.prepareMovieAudio()
             } label: {
                 Label(
-                    isPrepared ? "Reprocess Voice Removal" : "Remove Original Voice",
+                    isPrepared ? "Reprepare Movie Audio" : "Prepare Movie Audio",
                     systemImage: "waveform.badge.minus"
                 )
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(controller.sourceSeparation.state == .checking || controller.cleaningSegmentID != nil)
+            .disabled(controller.sourceSeparation.state == .checking || controller.isPreparingMovieAudio)
         }
     }
 
@@ -558,15 +491,13 @@ private struct AudioInspectorView: View {
                 }
             }
 
-            Section("Dialogue Cleaning") {
-                Picker("Strength", selection: cleaningPreset) {
-                    ForEach(DialogueCleaningPreset.allCases) { preset in
-                        Text(preset.title).tag(preset)
-                    }
-                }
-                .pickerStyle(.segmented)
+            Section("Movie Background") {
+                LabeledContent(
+                    "Recommended method",
+                    value: controller.recommendedAudioPreparationStrategy.title
+                )
 
-                Text((controller.project?.settings.dialogueCleaningPreset ?? .balanced).detail)
+                Text(preparationDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -585,7 +516,7 @@ private struct AudioInspectorView: View {
             }
 
             Section {
-                Text("Cleaning runs locally. Stronger removal may also soften centered music, impacts, and ambience.")
+                Text("Preparation runs locally and creates one continuous dialogue stem and one continuous background. Recording remains available while it runs.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -603,22 +534,30 @@ private struct AudioInspectorView: View {
             Button("Cancel", role: .cancel) {
                 controller.cancelSourceSeparation()
             }
-        } else if let segment = controller.selectedSegment {
-            let isPrepared = controller.hasCleanBackgroundForSelectedTrack(segment)
+        } else if controller.isPreparingMovieAudio {
+            ProgressView(value: controller.audioPreparationProgress) {
+                Text(controller.audioPreparationMessage)
+                    .lineLimit(2)
+            }
+            Button("Cancel", role: .cancel) {
+                controller.cancelSourceSeparation()
+            }
+        } else if controller.project?.sourceVideo != nil {
+            let isPrepared = controller.preparedAudioAsset != nil
             if isPrepared {
-                Label("Current line is prepared", systemImage: "checkmark.circle.fill")
+                Label("Continuous movie background is ready", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             }
             Button {
-                controller.prepareCleanBackground()
+                controller.prepareMovieAudio()
             } label: {
-                Label(isPrepared ? "Reprocess Line" : "Remove Original Voice", systemImage: "waveform.badge.minus")
+                Label(isPrepared ? "Reprepare Movie Audio" : "Prepare Movie Audio", systemImage: "waveform.badge.minus")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .disabled(controller.project?.sourceVideo == nil || controller.sourceSeparation.state == .checking)
         } else {
-            Text("Select a dialogue line to prepare its clean background.")
+            Text("Import a movie to prepare its continuous background.")
                 .foregroundStyle(.secondary)
         }
     }
@@ -627,13 +566,6 @@ private struct AudioInspectorView: View {
         Binding(
             get: { controller.selectedAudioTrack?.id ?? "" },
             set: { controller.updateSelectedAudioTrack($0) }
-        )
-    }
-
-    private var cleaningPreset: Binding<DialogueCleaningPreset> {
-        Binding(
-            get: { controller.project?.settings.dialogueCleaningPreset ?? .balanced },
-            set: { controller.updateDialogueCleaningPreset($0) }
         )
     }
 
@@ -652,6 +584,18 @@ private struct AudioInspectorView: View {
         ]
         .compactMap { $0 }
         .joined(separator: " · ")
+    }
+
+    private var preparationDescription: String {
+        switch controller.recommendedAudioPreparationStrategy {
+        case .embeddedMusicAndEffects:
+            let name = controller.musicAndEffectsCandidate?.title ?? "the detected M&E track"
+            return "Use \(name) as the continuous background and derive a synchronized dialogue guide without AI."
+        case .surroundAssisted:
+            return "Preserve the selected surround mix while using its center channel as the dialogue reference for local AI separation."
+        case .cinematicSeparation:
+            return "Use local cinematic AI once for the complete selected stereo track, producing continuous dialogue and background stems."
+        }
     }
 }
 

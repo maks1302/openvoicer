@@ -178,6 +178,14 @@ enum ExportCommandBuilder {
         var arguments = ["-hide_banner", "-nostdin", "-y", "-i", job.sourceURL.path]
         var inputs: [UUID: (take: Int, background: Int?)] = [:]
         var nextInput = 1
+        var preparedInputs: (dialogue: Int, background: Int)?
+
+        if let dialogueURL = job.preparedDialogueURL,
+           let backgroundURL = job.preparedBackgroundURL {
+            arguments += ["-i", dialogueURL.path, "-i", backgroundURL.path]
+            preparedInputs = (nextInput, nextInput + 1)
+            nextInput += 2
+        }
 
         for line in job.lines {
             arguments += ["-i", line.takeURL.path]
@@ -192,7 +200,10 @@ enum ExportCommandBuilder {
             inputs[line.segmentID] = (takeInput, backgroundInput)
         }
 
-        arguments += ["-filter_complex", filterGraph(job: job, inputs: inputs)]
+        arguments += [
+            "-filter_complex",
+            filterGraph(job: job, inputs: inputs, preparedInputs: preparedInputs)
+        ]
 
         switch job.scope {
         case .finishedMovie:
@@ -231,15 +242,29 @@ enum ExportCommandBuilder {
 
     private static func filterGraph(
         job: ExportJob,
-        inputs: [UUID: (take: Int, background: Int?)]
+        inputs: [UUID: (take: Int, background: Int?)],
+        preparedInputs: (dialogue: Int, background: Int)?
     ) -> String {
         var filters: [String] = []
-        // Container audio can begin at a non-zero PTS (common in remuxed MKV/MOV files).
-        // Normalize it before placing zero-based take inputs on the movie timeline.
-        filters.append("[0:a:\(job.audioTrackIndex)]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS[base0]")
-
         let baseLabel = "base"
-        filters.append("[base0]volume='\(combinedVolumeExpression(lines: job.lines, duckedVolume: Double(job.duckedOriginalVolume)))':eval=frame[\(baseLabel)]")
+        if let preparedInputs {
+            // The two continuous stems reconstruct the selected source mix. The
+            // background never switches at subtitle boundaries; only dialogue is
+            // automated, eliminating the per-line separation seam.
+            filters.append(
+                "[\(preparedInputs.dialogue):a:0]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,volume='\(combinedVolumeExpression(lines: job.lines, duckedVolume: Double(job.duckedOriginalVolume)))':eval=frame[preparedDialogue]"
+            )
+            filters.append(
+                "[\(preparedInputs.background):a:0]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,volume=\(number(Double(job.preparedBackgroundGain))),volume='\(preparedBackgroundVolumeExpression(lines: job.lines))':eval=frame[preparedBackground]"
+            )
+            filters.append(
+                "[preparedDialogue][preparedBackground]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[\(baseLabel)]"
+            )
+        } else {
+            // Container audio can begin at a non-zero PTS (common in remuxed MKV/MOV files).
+            filters.append("[0:a:\(job.audioTrackIndex)]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS[base0]")
+            filters.append("[base0]volume='\(combinedVolumeExpression(lines: job.lines, duckedVolume: Double(job.duckedOriginalVolume)))':eval=frame[\(baseLabel)]")
+        }
 
         var mixLabels = [baseLabel]
         for (index, line) in job.lines.enumerated() {
@@ -337,6 +362,21 @@ enum ExportCommandBuilder {
                 start: line.startTime,
                 end: line.endTime,
                 target: target,
+                transition: transitionDuration
+            )
+        }.reduce("1") { "min(\($0),\($1))" }
+    }
+
+    private static func preparedBackgroundVolumeExpression(
+        lines: [ExportLineAsset]
+    ) -> String {
+        let takeOnlyLines = lines.filter { $0.treatment == .takeOnly }
+        guard !takeOnlyLines.isEmpty else { return "1" }
+        return takeOnlyLines.map { line in
+            volumeExpression(
+                start: line.startTime,
+                end: line.endTime,
+                target: 0,
                 transition: transitionDuration
             )
         }.reduce("1") { "min(\($0),\($1))" }

@@ -60,6 +60,7 @@ private enum ProjectDirectory: String, CaseIterable {
     case recordings
     case waveformCache = "waveform-cache"
     case separationCache = "separation-cache"
+    case preparedAudio = "prepared-audio"
     case thumbnails
     case temp
 }

@@ -24,11 +24,21 @@ final class RecordingController {
     @ObservationIgnored private let recorder = AudioRecorder()
     @ObservationIgnored private var audioPlayer: AVAudioPlayer?
     @ObservationIgnored private var backgroundPlayer: AVAudioPlayer?
+    @ObservationIgnored private var preparedDialoguePlayer: AVPlayer?
+    @ObservationIgnored private var preparedBackgroundPlayer: AVPlayer?
+    @ObservationIgnored private var preparedDialogueURL: URL?
+    @ObservationIgnored private var preparedBackgroundURL: URL?
+    @ObservationIgnored private var preparedSeekTask: Task<Void, Never>?
+    @ObservationIgnored private var preparedDialogueRampTask: Task<Void, Never>?
+    @ObservationIgnored private var preparedBackgroundRampTask: Task<Void, Never>?
     @ObservationIgnored private var playbackCompletionTask: Task<Void, Never>?
     @ObservationIgnored private var lastLiveSampleIndex = 0
 
     var isActive: Bool { state != .idle }
     var isRecording: Bool { state == .recording }
+    var isPreparedMoviePlaying: Bool {
+        preparedDialoguePlayer != nil && preparedBackgroundPlayer != nil
+    }
 
     func begin(
         destinationURL: URL,
@@ -214,6 +224,130 @@ final class RecordingController {
             try? await Task.sleep(for: .seconds(stopDelay))
             voice?.stop()
             background?.stop()
+        }
+    }
+
+    func startPreparedMoviePlayback(
+        dialogueURL: URL,
+        backgroundURL: URL,
+        at timelineTime: TimeInterval,
+        dialogueGain: Float,
+        backgroundGain: Float
+    ) {
+        if preparedDialogueURL == dialogueURL,
+           preparedBackgroundURL == backgroundURL,
+           isPreparedMoviePlaying {
+            synchronizePreparedMoviePlayback(to: timelineTime)
+            setPreparedMovieVolumes(
+                dialogue: dialogueGain,
+                background: backgroundGain,
+                fadeDuration: 0
+            )
+            return
+        }
+
+        stopPreparedMoviePlayback()
+        let dialogue = AVPlayer(url: dialogueURL)
+        let background = AVPlayer(url: backgroundURL)
+        dialogue.volume = min(max(dialogueGain, 0), 1)
+        background.volume = min(max(backgroundGain, 0), 1)
+        preparedDialoguePlayer = dialogue
+        preparedBackgroundPlayer = background
+        preparedDialogueURL = dialogueURL
+        preparedBackgroundURL = backgroundURL
+        seekAndPlayPreparedMovie(to: timelineTime)
+    }
+
+    func synchronizePreparedMoviePlayback(to timelineTime: TimeInterval) {
+        guard preparedSeekTask == nil,
+              let dialogue = preparedDialoguePlayer,
+              let background = preparedBackgroundPlayer else { return }
+        let dialogueTime = dialogue.currentTime().seconds
+        let backgroundTime = background.currentTime().seconds
+        guard !dialogueTime.isFinite
+                || !backgroundTime.isFinite
+                || abs(dialogueTime - timelineTime) > 0.12
+                || abs(backgroundTime - timelineTime) > 0.12 else { return }
+        seekAndPlayPreparedMovie(to: timelineTime)
+    }
+
+    func setPreparedMovieVolumes(
+        dialogue: Float,
+        background: Float,
+        fadeDuration: TimeInterval
+    ) {
+        rampPreparedPlayer(
+            preparedDialoguePlayer,
+            to: dialogue,
+            duration: fadeDuration,
+            task: &preparedDialogueRampTask
+        )
+        rampPreparedPlayer(
+            preparedBackgroundPlayer,
+            to: background,
+            duration: fadeDuration,
+            task: &preparedBackgroundRampTask
+        )
+    }
+
+    func stopPreparedMoviePlayback() {
+        preparedSeekTask?.cancel()
+        preparedDialogueRampTask?.cancel()
+        preparedBackgroundRampTask?.cancel()
+        preparedSeekTask = nil
+        preparedDialogueRampTask = nil
+        preparedBackgroundRampTask = nil
+        preparedDialoguePlayer?.pause()
+        preparedBackgroundPlayer?.pause()
+        preparedDialoguePlayer = nil
+        preparedBackgroundPlayer = nil
+        preparedDialogueURL = nil
+        preparedBackgroundURL = nil
+    }
+
+    private func seekAndPlayPreparedMovie(to timelineTime: TimeInterval) {
+        preparedSeekTask?.cancel()
+        guard let dialogue = preparedDialoguePlayer,
+              let background = preparedBackgroundPlayer else { return }
+        let target = CMTime(seconds: max(timelineTime, 0), preferredTimescale: 48_000)
+        preparedSeekTask = Task { [weak self] in
+            await dialogue.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+            await background.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+            guard !Task.isCancelled,
+                  self?.preparedDialoguePlayer === dialogue,
+                  self?.preparedBackgroundPlayer === background else { return }
+            dialogue.play()
+            background.play()
+            self?.preparedSeekTask = nil
+        }
+    }
+
+    private func rampPreparedPlayer(
+        _ player: AVPlayer?,
+        to target: Float,
+        duration: TimeInterval,
+        task: inout Task<Void, Never>?
+    ) {
+        task?.cancel()
+        guard let player else {
+            task = nil
+            return
+        }
+        let clampedTarget = min(max(target, 0), 1)
+        let start = player.volume
+        guard duration > 0, abs(start - clampedTarget) > 0.001 else {
+            player.volume = clampedTarget
+            task = nil
+            return
+        }
+        task = Task {
+            let steps = 8
+            for step in 1...steps {
+                try? await Task.sleep(for: .seconds(duration / Double(steps)))
+                guard !Task.isCancelled else { return }
+                let fraction = Float(step) / Float(steps)
+                player.volume = start + (clampedTarget - start) * fraction
+            }
         }
     }
 

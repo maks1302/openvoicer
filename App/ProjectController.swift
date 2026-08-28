@@ -23,7 +23,9 @@ final class ProjectController {
     private(set) var isLoadingSubtitles = false
     private(set) var embeddedSubtitleTracks: [EmbeddedSubtitleTrack] = []
     private(set) var selectedSegmentID: UUID?
-    private(set) var cleaningSegmentID: UUID?
+    private(set) var isPreparingMovieAudio = false
+    private(set) var audioPreparationProgress = 0.0
+    private(set) var audioPreparationMessage = "Movie audio is not prepared"
     var segmentPreviewMode: SegmentMixTreatment = .duckedMix
     var mainPlaybackMode: MainPlaybackMode = .original {
         didSet {
@@ -55,7 +57,7 @@ final class ProjectController {
     @ObservationIgnored private var automaticStopTask: Task<Void, Never>?
     @ObservationIgnored private var finishingRecordingTask: Task<Void, Never>?
     @ObservationIgnored private var pendingTake: PendingRecordingTake?
-    @ObservationIgnored private var cleanBackgroundPreparationTask: Task<Void, Never>?
+    @ObservationIgnored private var audioPreparationTask: Task<Void, Never>?
     @ObservationIgnored private var continuousDubPreviewActive = false
     @ObservationIgnored private var activeDubbedSegmentID: UUID?
     @ObservationIgnored private var playbackVolumeRampTask: Task<Void, Never>?
@@ -152,6 +154,7 @@ final class ProjectController {
                 project.sourceVideo?.metadata.audioTracks.firstIndex(of: track)
             } ?? 0
             let logURL = projectURL.appending(path: "temp/export.log")
+            let preparedURLs = preparedMovieAudioURLs()
             let job = ExportJob(
                 sourceURL: sourceURL,
                 destinationURL: destination,
@@ -160,7 +163,10 @@ final class ProjectController {
                 audioTrackIndex: trackIndex,
                 scope: scope,
                 lines: lines,
-                duckedOriginalVolume: project.settings.duckedOriginalVolume
+                duckedOriginalVolume: project.settings.duckedOriginalVolume,
+                preparedDialogueURL: preparedURLs?.dialogue,
+                preparedBackgroundURL: preparedURLs?.background,
+                preparedBackgroundGain: project.settings.cleanBackgroundVolume
             )
             exportController.start(job: job)
         } catch {
@@ -216,6 +222,30 @@ final class ProjectController {
         return tracks.first(where: { $0.id == selectedID }) ?? tracks.first
     }
 
+    var musicAndEffectsCandidate: AudioTrackMetadata? {
+        guard let selectedAudioTrack else { return nil }
+        return project?.sourceVideo?.metadata.audioTracks.first {
+            $0.id != selectedAudioTrack.id && $0.isLikelyMusicAndEffects
+        }
+    }
+
+    var recommendedAudioPreparationStrategy: AudioPreparationStrategy {
+        if musicAndEffectsCandidate != nil { return .embeddedMusicAndEffects }
+        if (selectedAudioTrack?.channelCount ?? 2) >= 6 { return .surroundAssisted }
+        return .cinematicSeparation
+    }
+
+    var preparedAudioAsset: PreparedAudioAsset? {
+        guard let selectedAudioTrack, let projectURL else { return nil }
+        return project?.preparedAudioAssets.first { asset in
+            guard asset.sourceAudioTrackID == selectedAudioTrack.id else { return false }
+            let dialogueURL = projectURL.appending(path: "prepared-audio").appending(path: asset.dialogueFileName)
+            let backgroundURL = projectURL.appending(path: "prepared-audio").appending(path: asset.backgroundFileName)
+            return FileManager.default.fileExists(atPath: dialogueURL.path)
+                && FileManager.default.fileExists(atPath: backgroundURL.path)
+        }
+    }
+
     func selectSegment(_ id: UUID?) {
         guard !recording.isActive else { return }
         selectedSegmentID = id
@@ -268,7 +298,7 @@ final class ProjectController {
             return
         }
         if mode == .cleanDub, !hasCleanBackgroundForSelectedTrack(segment) {
-            errorMessage = "Clean this line using the selected source audio track before previewing the clean dub."
+            errorMessage = "Prepare this movie’s background using the selected source audio track before previewing the clean dub."
             return
         }
 
@@ -289,14 +319,13 @@ final class ProjectController {
                   let url = recordingURL(for: take) else { return }
             do {
                 if mode == .cleanDub,
-                   let asset = segment.separatedBackground,
-                   let backgroundURL = separatedBackgroundURL(for: asset) {
+                   let background = cleanBackgroundPlaybackAsset(for: segment) {
                     try recording.playSeparatedPreview(
                         takeID: take.id,
                         takeURL: url,
                         takeGain: take.gain,
-                        backgroundURL: backgroundURL,
-                        backgroundOffset: asset.preRollDuration,
+                        backgroundURL: background.url,
+                        backgroundOffset: background.offset,
                         backgroundGain: project.settings.cleanBackgroundVolume
                     )
                 } else {
@@ -315,103 +344,139 @@ final class ProjectController {
 
     @discardableResult
     func prepareCleanBackground() -> Bool {
-        guard let segment = selectedSegment,
-              cleaningSegmentID == nil,
+        prepareMovieAudio()
+    }
+
+    @discardableResult
+    func prepareMovieAudio() -> Bool {
+        guard !isPreparingMovieAudio,
               let projectURL,
-              let sourceURL = playback.sourceURL,
+              let sourceURL = accessedVideoURL ?? playback.sourceURL,
               let selectedAudioTrack,
-              let audioTrackIndex = project?.sourceVideo?.metadata.audioTracks.firstIndex(of: selectedAudioTrack) else { return false }
+              let audioTrackIndex = project?.sourceVideo?.metadata.audioTracks.firstIndex(of: selectedAudioTrack) else {
+            return false
+        }
         playback.pause()
         recording.stopTakePlayback()
-        cleaningSegmentID = segment.id
+        isPreparingMovieAudio = true
+        audioPreparationProgress = 0.02
+        audioPreparationMessage = "Inspecting the selected audio track…"
 
-        let preRoll = min(2, segment.startTime)
-        let postRoll = min(2, max(0, playback.duration - segment.endTime))
-        let extractionStart = segment.startTime - preRoll
-        let extractionDuration = segment.duration + preRoll + postRoll
-        let isMultichannel = (selectedAudioTrack.channelCount ?? 2) >= 6
-        let cleaningPreset = project?.settings.dialogueCleaningPreset ?? .balanced
-        let dialogueReduction = cleaningPreset.dialogueReduction
-        let centerCancellationStrength = isMultichannel ? cleaningPreset.centerCancellationStrength : 0
+        let strategy = recommendedAudioPreparationStrategy
+        let meCandidate = musicAndEffectsCandidate
         let workingDirectory = FileManager.default.temporaryDirectory
-            .appending(path: "DubLab-Separation-\(UUID().uuidString)", directoryHint: .isDirectory)
-        let inputURL = workingDirectory.appending(path: "input.wav")
-        let outputURL = workingDirectory.appending(path: "background.wav")
-        let relativeName = "\(segment.id.uuidString)-\(selectedAudioTrack.id).wav"
-        let finalURL = projectURL.appending(path: "separation-cache").appending(path: relativeName)
+            .appending(path: "DubLab-MovieAudio-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let originalMixURL = workingDirectory.appending(path: "original-mix.wav")
+        let centerReferenceURL = workingDirectory.appending(path: "center-reference.wav")
+        let dialogueURL = workingDirectory.appending(path: "dialogue.wav")
+        let backgroundURL = workingDirectory.appending(path: "background.wav")
 
-        cleanBackgroundPreparationTask = Task { [weak self] in
+        audioPreparationTask = Task { [weak self] in
             guard let self else { return }
             do {
                 try FileManager.default.createDirectory(at: workingDirectory, withIntermediateDirectories: true)
-                try await ffmpegService.extractAudioSegment(
+                audioPreparationProgress = 0.06
+                audioPreparationMessage = "Extracting the selected movie mix…"
+                try await ffmpegService.extractAudioTrack(
                     from: sourceURL,
-                    startTime: extractionStart,
-                    duration: extractionDuration,
                     audioTrackIndex: audioTrackIndex,
-                    preserveMultichannel: isMultichannel,
-                    destination: inputURL
+                    mode: .stereoMix,
+                    destination: originalMixURL
                 )
                 try Task.checkCancellation()
-                sourceSeparation.prepare(
-                    inputURL: inputURL,
-                    outputURL: outputURL,
-                    dialogueReduction: dialogueReduction,
-                    residualSuppression: cleaningPreset.residualSuppressionStrength,
-                    centerCancellationStrength: centerCancellationStrength
-                ) { [weak self] result in
-                    guard let self else { return }
-                    defer {
-                        try? FileManager.default.removeItem(at: workingDirectory)
-                        if cleaningSegmentID == segment.id {
-                            cleaningSegmentID = nil
-                        }
-                        cleanBackgroundPreparationTask = nil
+
+                switch strategy {
+                case .embeddedMusicAndEffects:
+                    guard let meCandidate,
+                          let tracks = project?.sourceVideo?.metadata.audioTracks,
+                          let meIndex = tracks.firstIndex(of: meCandidate) else {
+                        throw AudioPreparationError.musicAndEffectsUnavailable
                     }
-                    switch result {
-                    case .success:
-                        do {
-                            try FileManager.default.createDirectory(
-                                at: finalURL.deletingLastPathComponent(),
-                                withIntermediateDirectories: true
-                            )
-                            if FileManager.default.fileExists(atPath: finalURL.path) {
-                                _ = try FileManager.default.replaceItemAt(finalURL, withItemAt: outputURL)
-                            } else {
-                                try FileManager.default.moveItem(at: outputURL, to: finalURL)
-                            }
-                            updateSegment(segment.id) { current in
-                                current.separatedBackground = SourceSeparationAsset(
-                                    fileName: relativeName,
-                                    preRollDuration: preRoll,
-                                    modelID: separationModelID(
-                                        track: selectedAudioTrack,
-                                        preset: cleaningPreset
-                                    ),
-                                    sourceAudioTrackID: selectedAudioTrack.id
+                    audioPreparationProgress = 0.38
+                    audioPreparationMessage = "Extracting the embedded M&E track…"
+                    try await ffmpegService.extractAudioTrack(
+                        from: sourceURL,
+                        audioTrackIndex: meIndex,
+                        mode: .stereoMix,
+                        destination: backgroundURL
+                    )
+                    try Task.checkCancellation()
+                    audioPreparationProgress = 0.72
+                    audioPreparationMessage = "Aligning the dialogue guide with M&E…"
+                    try await ffmpegService.createDialogueDifference(
+                        originalURL: originalMixURL,
+                        backgroundURL: backgroundURL,
+                        destination: dialogueURL
+                    )
+                    try finalizePreparedMovieAudio(
+                        dialogueURL: dialogueURL,
+                        backgroundURL: backgroundURL,
+                        sourceTrack: selectedAudioTrack,
+                        backgroundTrack: meCandidate,
+                        strategy: strategy,
+                        projectURL: projectURL
+                    )
+                    finishMovieAudioPreparation(workingDirectory: workingDirectory)
+
+                case .surroundAssisted, .cinematicSeparation:
+                    var dialogueInputURL: URL?
+                    if strategy == .surroundAssisted {
+                        audioPreparationProgress = 0.16
+                        audioPreparationMessage = "Extracting the surround center dialogue reference…"
+                        try await ffmpegService.extractAudioTrack(
+                            from: sourceURL,
+                            audioTrackIndex: audioTrackIndex,
+                            mode: .centerReference,
+                            destination: centerReferenceURL
+                        )
+                        dialogueInputURL = centerReferenceURL
+                    }
+                    try Task.checkCancellation()
+                    audioPreparationProgress = 0.22
+                    audioPreparationMessage = strategy == .surroundAssisted
+                        ? "Separating center dialogue while preserving the movie mix…"
+                        : "Separating continuous dialogue, music, and effects…"
+                    sourceSeparation.prepare(
+                        inputURL: originalMixURL,
+                        outputURL: backgroundURL,
+                        dialogueOutputURL: dialogueURL,
+                        dialogueInputURL: dialogueInputURL
+                    ) { [weak self] result in
+                        guard let self else { return }
+                        switch result {
+                        case .success:
+                            do {
+                                try finalizePreparedMovieAudio(
+                                    dialogueURL: dialogueURL,
+                                    backgroundURL: backgroundURL,
+                                    sourceTrack: selectedAudioTrack,
+                                    backgroundTrack: nil,
+                                    strategy: strategy,
+                                    projectURL: projectURL
+                                )
+                                finishMovieAudioPreparation(workingDirectory: workingDirectory)
+                            } catch {
+                                failMovieAudioPreparation(
+                                    error,
+                                    workingDirectory: workingDirectory,
+                                    fallback: "The prepared movie stems could not be saved."
                                 )
                             }
-                            if selectedSegmentID == segment.id {
-                                segmentPreviewMode = .cleanDub
-                            }
-                        } catch {
-                            present(error, fallback: "The clean background could not be saved in the project.")
-                        }
-                    case .failure(let error):
-                        if !(error is CancellationError) {
-                            present(error, fallback: "Dialogue separation failed.")
+                        case .failure(let error):
+                            failMovieAudioPreparation(
+                                error,
+                                workingDirectory: workingDirectory,
+                                fallback: "Dialogue separation failed."
+                            )
                         }
                     }
                 }
             } catch {
-                try? FileManager.default.removeItem(at: workingDirectory)
-                if cleaningSegmentID == segment.id {
-                    cleaningSegmentID = nil
-                }
-                cleanBackgroundPreparationTask = nil
-                if !(error is CancellationError) {
-                    present(error, fallback: "The movie audio could not be prepared for dialogue separation.")
-                }
+                failMovieAudioPreparation(
+                    error,
+                    workingDirectory: workingDirectory,
+                    fallback: "The movie audio could not be prepared."
+                )
             }
         }
         return true
@@ -446,22 +511,17 @@ final class ProjectController {
     }
 
     func cancelSourceSeparation() {
-        cleanBackgroundPreparationTask?.cancel()
-        cleanBackgroundPreparationTask = nil
+        audioPreparationTask?.cancel()
+        audioPreparationTask = nil
         sourceSeparation.cancel()
-        cleaningSegmentID = nil
+        isPreparingMovieAudio = false
+        audioPreparationProgress = 0
+        audioPreparationMessage = "Movie audio preparation cancelled"
     }
 
     func updateDuckedOriginalVolume(_ volume: Float) {
         guard var project else { return }
         project.settings.duckedOriginalVolume = min(max(volume, 0), 1)
-        self.project = project
-        save()
-    }
-
-    func updateDialogueCleaningPreset(_ preset: DialogueCleaningPreset) {
-        guard var project else { return }
-        project.settings.dialogueCleaningPreset = preset
         self.project = project
         save()
     }
@@ -482,13 +542,6 @@ final class ProjectController {
         playback.pause()
         recording.stopTakePlayback()
         project.settings.selectedAudioTrackID = trackID
-        for index in project.segments.indices {
-            project.segments[index].separatedBackground = nil
-            if project.segments[index].acceptedVersion?.treatment == .cleanDub {
-                project.segments[index].acceptedVersion = nil
-                project.segments[index].status = project.segments[index].takes.isEmpty ? .pending : .recorded
-            }
-        }
         self.project = project
         save()
         refreshWaveforms()
@@ -502,20 +555,8 @@ final class ProjectController {
         }
     }
 
-    func hasCleanBackgroundForSelectedTrack(_ segment: DubSegment) -> Bool {
-        guard let asset = segment.separatedBackground,
-              let selectedAudioTrack,
-              let preset = project?.settings.dialogueCleaningPreset else { return false }
-        return asset.sourceAudioTrackID == selectedAudioTrack.id
-            && asset.modelID == separationModelID(track: selectedAudioTrack, preset: preset)
-    }
-
-    private func separationModelID(
-        track: AudioTrackMetadata,
-        preset: DialogueCleaningPreset
-    ) -> String {
-        let channelProcessing = (track.channelCount ?? 2) >= 6 ? "adaptive-center" : "stereo"
-        return "\(BanditSourceSeparationService.modelID)-\(channelProcessing)-\(preset.rawValue)-residual-v2"
+    func hasCleanBackgroundForSelectedTrack(_: DubSegment) -> Bool {
+        preparedAudioAsset != nil
     }
 
     func toggleRecording() {
@@ -777,18 +818,8 @@ final class ProjectController {
             let takeURL = projectURL.appending(path: "recordings").appending(path: take.fileName)
             guard FileManager.default.fileExists(atPath: takeURL.path) else { return nil }
 
-            var backgroundURL: URL?
-            var backgroundPreRoll: TimeInterval = 0
             if acceptedVersion.treatment == .cleanDub,
-               hasCleanBackgroundForSelectedTrack(segment),
-               let background = segment.separatedBackground {
-                let candidate = projectURL.appending(path: "separation-cache").appending(path: background.fileName)
-                if FileManager.default.fileExists(atPath: candidate.path) {
-                    backgroundURL = candidate
-                    backgroundPreRoll = background.preRollDuration
-                }
-            }
-            if acceptedVersion.treatment == .cleanDub, backgroundURL == nil {
+               preparedAudioAsset == nil {
                 throw ExportError.cleanBackgroundUnavailable
             }
 
@@ -806,8 +837,8 @@ final class ProjectController {
                 takeURL: takeURL,
                 takeDuration: take.duration,
                 takeGain: take.gain,
-                backgroundURL: backgroundURL,
-                backgroundPreRoll: backgroundPreRoll,
+                backgroundURL: nil,
+                backgroundPreRoll: 0,
                 backgroundGain: project.settings.cleanBackgroundVolume,
                 treatment: exportTreatment
             )
@@ -904,7 +935,11 @@ final class ProjectController {
             cancelRecording()
             playback.clear()
             let playbackSource = try await preparePlaybackSource(for: url, in: projectURL)
-            let metadata = try await metadataLoader.load(from: playbackSource.url)
+            var metadata = try await metadataLoader.load(from: playbackSource.url)
+            if let probedTracks = try? await ffmpegService.audioTracks(in: url),
+               !probedTracks.isEmpty {
+                metadata.audioTracks = probedTracks
+            }
             let bookmark = try SecurityScopedBookmarks.makeBookmark(for: url)
 
             releaseVideoAccess()
@@ -1155,10 +1190,107 @@ final class ProjectController {
         projectURL?.appending(path: "recordings").appending(path: take.fileName)
     }
 
-    private func separatedBackgroundURL(for asset: SourceSeparationAsset) -> URL? {
-        guard let projectURL else { return nil }
-        let url = projectURL.appending(path: "separation-cache").appending(path: asset.fileName)
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    private func preparedAudioURL(fileName: String) -> URL? {
+        projectURL?.appending(path: "prepared-audio").appending(path: fileName)
+    }
+
+    private func preparedMovieAudioURLs() -> (dialogue: URL, background: URL)? {
+        guard let asset = preparedAudioAsset,
+              let dialogue = preparedAudioURL(fileName: asset.dialogueFileName),
+              let background = preparedAudioURL(fileName: asset.backgroundFileName) else { return nil }
+        return (dialogue, background)
+    }
+
+    private func cleanBackgroundPlaybackAsset(
+        for segment: DubSegment
+    ) -> (url: URL, offset: TimeInterval)? {
+        if let urls = preparedMovieAudioURLs() {
+            return (urls.background, segment.startTime)
+        }
+        return nil
+    }
+
+    private func finalizePreparedMovieAudio(
+        dialogueURL: URL,
+        backgroundURL: URL,
+        sourceTrack: AudioTrackMetadata,
+        backgroundTrack: AudioTrackMetadata?,
+        strategy: AudioPreparationStrategy,
+        projectURL: URL
+    ) throws {
+        let relativeDirectory = sourceTrack.id
+        let relativeDialogue = "\(relativeDirectory)/dialogue.wav"
+        let relativeBackground = "\(relativeDirectory)/background.wav"
+        let destinationDirectory = projectURL
+            .appending(path: "prepared-audio", directoryHint: .isDirectory)
+            .appending(path: relativeDirectory, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+        try replaceGeneratedFile(
+            at: destinationDirectory.appending(path: "dialogue.wav"),
+            with: dialogueURL
+        )
+        try replaceGeneratedFile(
+            at: destinationDirectory.appending(path: "background.wav"),
+            with: backgroundURL
+        )
+
+        guard var project else { return }
+        project.preparedAudioAssets.removeAll { $0.sourceAudioTrackID == sourceTrack.id }
+        project.preparedAudioAssets.append(
+            PreparedAudioAsset(
+                sourceAudioTrackID: sourceTrack.id,
+                backgroundSourceTrackID: backgroundTrack?.id,
+                strategy: strategy,
+                dialogueFileName: relativeDialogue,
+                backgroundFileName: relativeBackground,
+                modelID: preparedAudioModelID(strategy: strategy)
+            )
+        )
+        project.modifiedAt = Date()
+        self.project = project
+        segmentPreviewMode = .cleanDub
+        save()
+    }
+
+    private func replaceGeneratedFile(at destination: URL, with source: URL) throws {
+        if FileManager.default.fileExists(atPath: destination.path) {
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: source)
+        } else {
+            try FileManager.default.moveItem(at: source, to: destination)
+        }
+    }
+
+    private func preparedAudioModelID(strategy: AudioPreparationStrategy) -> String {
+        switch strategy {
+        case .embeddedMusicAndEffects: "embedded-me-difference-v1"
+        case .surroundAssisted: "\(BanditSourceSeparationService.modelID)-center-reference-continuous-v1"
+        case .cinematicSeparation: "\(BanditSourceSeparationService.modelID)-continuous-v1"
+        }
+    }
+
+    private func finishMovieAudioPreparation(workingDirectory: URL) {
+        try? FileManager.default.removeItem(at: workingDirectory)
+        audioPreparationTask = nil
+        isPreparingMovieAudio = false
+        audioPreparationProgress = 1
+        audioPreparationMessage = "Continuous movie background is ready"
+    }
+
+    private func failMovieAudioPreparation(
+        _ error: Error,
+        workingDirectory: URL,
+        fallback: String
+    ) {
+        try? FileManager.default.removeItem(at: workingDirectory)
+        audioPreparationTask = nil
+        isPreparingMovieAudio = false
+        if error is CancellationError {
+            audioPreparationProgress = 0
+            audioPreparationMessage = "Movie audio preparation cancelled"
+        } else {
+            audioPreparationMessage = error.localizedDescription
+            present(error, fallback: fallback)
+        }
     }
 
     private func refreshWaveforms() {
@@ -1187,6 +1319,23 @@ final class ProjectController {
               !recording.isActive,
               let project else { return }
 
+        let preparedURLs = preparedMovieAudioURLs()
+        if let preparedURLs {
+            playbackVolumeRampTask?.cancel()
+            playback.player.volume = 0
+            if recording.isPreparedMoviePlaying {
+                recording.synchronizePreparedMoviePlayback(to: time)
+            } else {
+                recording.startPreparedMoviePlayback(
+                    dialogueURL: preparedURLs.dialogue,
+                    backgroundURL: preparedURLs.background,
+                    at: time,
+                    dialogueGain: 1,
+                    backgroundGain: project.settings.cleanBackgroundVolume
+                )
+            }
+        }
+
         let segment = project.segments.first {
             time >= $0.startTime
                 && time < $0.endTime
@@ -1200,19 +1349,35 @@ final class ProjectController {
         activeDubbedSegmentID = nil
         guard let segment,
               let version = effectiveAcceptedVersion(for: segment) else {
-            rampPlaybackVolume(
-                to: project.settings.originalVolume,
-                duration: Self.liveMixTransitionDuration
-            )
+            if preparedURLs != nil {
+                recording.setPreparedMovieVolumes(
+                    dialogue: 1,
+                    background: project.settings.cleanBackgroundVolume,
+                    fadeDuration: Self.liveMixTransitionDuration
+                )
+            } else {
+                rampPlaybackVolume(
+                    to: project.settings.originalVolume,
+                    duration: Self.liveMixTransitionDuration
+                )
+            }
             return
         }
         activeDubbedSegmentID = segment.id
 
         if version.treatment == .original {
-            rampPlaybackVolume(
-                to: project.settings.originalVolume,
-                duration: Self.liveMixTransitionDuration
-            )
+            if preparedURLs != nil {
+                recording.setPreparedMovieVolumes(
+                    dialogue: 1,
+                    background: project.settings.cleanBackgroundVolume,
+                    fadeDuration: Self.liveMixTransitionDuration
+                )
+            } else {
+                rampPlaybackVolume(
+                    to: project.settings.originalVolume,
+                    duration: Self.liveMixTransitionDuration
+                )
+            }
             return
         }
 
@@ -1226,10 +1391,18 @@ final class ProjectController {
             case .original:
                 break
             case .duckedMix:
-                rampPlaybackVolume(
-                    to: project.settings.duckedOriginalVolume,
-                    duration: Self.liveMixTransitionDuration
-                )
+                if preparedURLs != nil {
+                    recording.setPreparedMovieVolumes(
+                        dialogue: project.settings.duckedOriginalVolume,
+                        background: project.settings.cleanBackgroundVolume,
+                        fadeDuration: Self.liveMixTransitionDuration
+                    )
+                } else {
+                    rampPlaybackVolume(
+                        to: project.settings.duckedOriginalVolume,
+                        duration: Self.liveMixTransitionDuration
+                    )
+                }
                 if offset < take.duration - 0.01 {
                     try recording.playTake(
                         id: take.id,
@@ -1241,7 +1414,15 @@ final class ProjectController {
                     )
                 }
             case .takeOnly:
-                rampPlaybackVolume(to: 0, duration: Self.liveMixTransitionDuration)
+                if preparedURLs != nil {
+                    recording.setPreparedMovieVolumes(
+                        dialogue: 0,
+                        background: 0,
+                        fadeDuration: Self.liveMixTransitionDuration
+                    )
+                } else {
+                    rampPlaybackVolume(to: 0, duration: Self.liveMixTransitionDuration)
+                }
                 if offset < take.duration - 0.01 {
                     try recording.playTake(
                         id: take.id,
@@ -1253,23 +1434,30 @@ final class ProjectController {
                     )
                 }
             case .cleanDub:
-                rampPlaybackVolume(to: 0, duration: Self.liveMixTransitionDuration)
-                if let asset = segment.separatedBackground,
-                   hasCleanBackgroundForSelectedTrack(segment),
-                   let backgroundURL = separatedBackgroundURL(for: asset) {
-                    try recording.playSeparatedPreview(
-                        takeID: take.id,
-                        takeURL: takeURL,
-                        takeGain: take.gain,
-                        backgroundURL: backgroundURL,
-                        backgroundOffset: asset.preRollDuration,
-                        backgroundGain: project.settings.cleanBackgroundVolume,
-                        startOffset: offset,
-                        timelineDuration: segment.duration,
-                        voiceFadeInDuration: 0.015,
-                        backgroundFadeInDuration: Self.liveMixTransitionDuration
+                if preparedURLs != nil {
+                    recording.setPreparedMovieVolumes(
+                        dialogue: 0,
+                        background: project.settings.cleanBackgroundVolume,
+                        fadeDuration: Self.liveMixTransitionDuration
                     )
+                    if offset < take.duration - 0.01 {
+                        try recording.playTake(
+                            id: take.id,
+                            at: takeURL,
+                            gain: take.gain,
+                            timelineDuration: segment.duration,
+                            startOffset: offset,
+                            fadeInDuration: 0.015
+                        )
+                    }
                 } else {
+                    // A legacy project can contain accepted clean-dub choices
+                    // backed by per-line stems. Never stitch those chunks again;
+                    // use the safe ducked fallback until the movie is prepared.
+                    rampPlaybackVolume(
+                        to: project.settings.duckedOriginalVolume,
+                        duration: Self.liveMixTransitionDuration
+                    )
                     if offset < take.duration - 0.01 {
                         try recording.playTake(
                             id: take.id,
@@ -1292,6 +1480,7 @@ final class ProjectController {
         playbackVolumeRampTask?.cancel()
         playbackVolumeRampTask = nil
         recording.stopTakePlayback()
+        recording.stopPreparedMoviePlayback()
         playback.player.volume = project?.settings.originalVolume ?? 1
         activeDubbedSegmentID = nil
     }
@@ -1358,8 +1547,12 @@ final class ProjectController {
                 save()
             }
         }
+        if let probedTracks = try? await ffmpegService.audioTracks(in: resolved.url),
+           !probedTracks.isEmpty {
+            project.sourceVideo?.metadata.audioTracks = probedTracks
+        }
         playback.load(url: playbackURL, duration: source.metadata.duration)
-        let tracks = source.metadata.audioTracks
+        let tracks = project.sourceVideo?.metadata.audioTracks ?? source.metadata.audioTracks
         if !tracks.isEmpty {
             let selectedID = project.settings.selectedAudioTrackID
             let selectedIndex = tracks.firstIndex { $0.id == selectedID } ?? 0
@@ -1420,5 +1613,16 @@ enum SourceVideoError: LocalizedError {
 
     var errorDescription: String? {
         "The original movie file has moved or is no longer accessible."
+    }
+}
+
+enum AudioPreparationError: LocalizedError {
+    case musicAndEffectsUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .musicAndEffectsUnavailable:
+            "The detected Music & Effects track is no longer available. Choose another source track or use AI preparation."
+        }
     }
 }

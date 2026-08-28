@@ -1,7 +1,7 @@
 import Foundation
 
 struct DubProject: Codable, Identifiable, Hashable, Sendable {
-    static let currentSchemaVersion = 8
+    static let currentSchemaVersion = 9
 
     var schemaVersion: Int
     let id: UUID
@@ -13,6 +13,7 @@ struct DubProject: Codable, Identifiable, Hashable, Sendable {
     var segments: [DubSegment]
     var speakers: [Speaker]
     var settings: ProjectSettings
+    var preparedAudioAssets: [PreparedAudioAsset]
 
     init(name: String) {
         schemaVersion = Self.currentSchemaVersion
@@ -25,11 +26,12 @@ struct DubProject: Codable, Identifiable, Hashable, Sendable {
         segments = []
         speakers = []
         settings = ProjectSettings()
+        preparedAudioAssets = []
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, id, name, createdAt, modifiedAt, sourceVideo
-        case subtitleSource, segments, speakers, settings
+        case subtitleSource, segments, speakers, settings, preparedAudioAssets
     }
 
     init(from decoder: Decoder) throws {
@@ -44,6 +46,55 @@ struct DubProject: Codable, Identifiable, Hashable, Sendable {
         segments = try container.decodeIfPresent([DubSegment].self, forKey: .segments) ?? []
         speakers = try container.decodeIfPresent([Speaker].self, forKey: .speakers) ?? []
         settings = try container.decodeIfPresent(ProjectSettings.self, forKey: .settings) ?? ProjectSettings()
+        preparedAudioAssets = try container.decodeIfPresent(
+            [PreparedAudioAsset].self,
+            forKey: .preparedAudioAssets
+        ) ?? []
+    }
+}
+
+struct PreparedAudioAsset: Codable, Hashable, Identifiable, Sendable {
+    let id: UUID
+    var sourceAudioTrackID: String
+    var backgroundSourceTrackID: String?
+    var strategy: AudioPreparationStrategy
+    var dialogueFileName: String
+    var backgroundFileName: String
+    var modelID: String
+    var createdAt: Date
+
+    init(
+        id: UUID = UUID(),
+        sourceAudioTrackID: String,
+        backgroundSourceTrackID: String? = nil,
+        strategy: AudioPreparationStrategy,
+        dialogueFileName: String,
+        backgroundFileName: String,
+        modelID: String,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.sourceAudioTrackID = sourceAudioTrackID
+        self.backgroundSourceTrackID = backgroundSourceTrackID
+        self.strategy = strategy
+        self.dialogueFileName = dialogueFileName
+        self.backgroundFileName = backgroundFileName
+        self.modelID = modelID
+        self.createdAt = createdAt
+    }
+}
+
+enum AudioPreparationStrategy: String, Codable, Hashable, Sendable {
+    case embeddedMusicAndEffects
+    case surroundAssisted
+    case cinematicSeparation
+
+    var title: String {
+        switch self {
+        case .embeddedMusicAndEffects: "Embedded M&E"
+        case .surroundAssisted: "Surround-assisted"
+        case .cinematicSeparation: "Cinematic AI"
+        }
     }
 }
 

@@ -97,6 +97,9 @@ struct ExportJob: Sendable {
     let scope: ExportRenderScope
     let lines: [ExportLineAsset]
     let duckedOriginalVolume: Float
+    var preparedDialogueURL: URL? = nil
+    var preparedBackgroundURL: URL? = nil
+    var preparedBackgroundGain: Float = 1
 }
 
 enum ExportError: LocalizedError {

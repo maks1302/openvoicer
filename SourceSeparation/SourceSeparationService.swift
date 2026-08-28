@@ -12,9 +12,8 @@ protocol SourceSeparationService: Sendable {
     func separate(
         inputURL: URL,
         outputURL: URL,
-        dialogueReduction: Double,
-        residualSuppression: Double,
-        centerCancellationStrength: Double,
+        dialogueOutputURL: URL?,
+        dialogueInputURL: URL?,
         progress: @escaping @Sendable (SourceSeparationProgress) -> Void
     ) async throws
     func cancel() async
@@ -73,9 +72,8 @@ actor BanditSourceSeparationService: SourceSeparationService {
     func separate(
         inputURL: URL,
         outputURL: URL,
-        dialogueReduction: Double,
-        residualSuppression: Double,
-        centerCancellationStrength: Double,
+        dialogueOutputURL: URL?,
+        dialogueInputURL: URL?,
         progress: @escaping @Sendable (SourceSeparationProgress) -> Void
     ) async throws {
         guard isRuntimeReady() else { throw SourceSeparationError.runtimeUnavailable }
@@ -86,18 +84,20 @@ actor BanditSourceSeparationService: SourceSeparationService {
         var arguments = [
             "--weights", weightsDirectory.path,
             "--input", inputURL.path,
-            "--background", outputURL.path,
-            "--dialogue-reduction", String(dialogueReduction),
-            "--residual-suppression", String(residualSuppression)
+            "--background", outputURL.path
         ]
-        if centerCancellationStrength > 0 {
-            arguments.append(contentsOf: [
-                "--center-cancel",
-                "--center-cancel-strength", String(centerCancellationStrength)
-            ])
+        if let dialogueOutputURL {
+            arguments += ["--dialogue", dialogueOutputURL.path]
+        }
+        if let dialogueInputURL {
+            arguments += ["--dialogue-input", dialogueInputURL.path]
         }
         try await runHelper(arguments: arguments, progress: progress)
         guard FileManager.default.fileExists(atPath: outputURL.path) else {
+            throw SourceSeparationError.missingOutput
+        }
+        if let dialogueOutputURL,
+           !FileManager.default.fileExists(atPath: dialogueOutputURL.path) {
             throw SourceSeparationError.missingOutput
         }
     }

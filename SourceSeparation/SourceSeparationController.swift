@@ -29,9 +29,8 @@ final class SourceSeparationController {
     func prepare(
         inputURL: URL,
         outputURL: URL,
-        dialogueReduction: Double,
-        residualSuppression: Double,
-        centerCancellationStrength: Double,
+        dialogueOutputURL: URL? = nil,
+        dialogueInputURL: URL? = nil,
         completion: @escaping @MainActor (Result<Void, Error>) -> Void
     ) {
         guard !isBusy else { return }
@@ -55,9 +54,8 @@ final class SourceSeparationController {
                 try await service.separate(
                     inputURL: inputURL,
                     outputURL: outputURL,
-                    dialogueReduction: dialogueReduction,
-                    residualSuppression: residualSuppression,
-                    centerCancellationStrength: centerCancellationStrength
+                    dialogueOutputURL: dialogueOutputURL,
+                    dialogueInputURL: dialogueInputURL
                 ) { [weak self] update in
                     Task { @MainActor in
                         self?.progress = update.fraction
