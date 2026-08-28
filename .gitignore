@@ -1,0 +1,14 @@
+.DS_Store
+.build/
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.xccheckout
+*.xcscmblueprint
+*.dublab/
+*.wav
+*.mp4
+*.mov
+*.mkv
+.swiftpm/
