@@ -134,55 +134,115 @@ struct NewProjectAssistantView: View {
                 .frame(height: 210)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
-                Button {
-                    controller.previewNewProjectSelection()
-                } label: {
-                    Label("Preview 12 Seconds at In Point", systemImage: "play.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(controller.isPreparingNewProjectPreview)
-
                 if draft.scopeMode == .clip {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text("In")
-                            Text(TimeFormatter.playbackTime(draft.normalizedClipStart))
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Text("Out")
-                            Text(TimeFormatter.playbackTime(draft.normalizedClipEnd))
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                        }
-                        Slider(
-                            value: binding(\.clipStartTime, fallback: 0),
-                            in: 0...max(draft.normalizedClipEnd - 1, 0.01)
-                        )
-                        Slider(
-                            value: binding(\.clipEndTime, fallback: draft.metadata.duration),
-                            in: min(
-                                draft.normalizedClipStart + 1,
-                                draft.metadata.duration
-                            )...max(draft.metadata.duration, draft.normalizedClipStart + 1.01)
-                        )
-                        HStack {
-                            TextField("Start (seconds)", value: binding(\.clipStartTime, fallback: 0), format: .number)
-                            TextField("End (seconds)", value: binding(\.clipEndTime, fallback: draft.metadata.duration), format: .number)
-                        }
-                    }
+                    clipRangeEditor(draft)
 
                     LabeledContent("Clip duration", value: TimeFormatter.playbackTime(draft.selectedDuration))
                     Text("DubLab processes only this range, plus three seconds of hidden context at each edge.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
+                    Button {
+                        controller.previewNewProjectSelection()
+                    } label: {
+                        Label("Preview Movie Sample", systemImage: "play.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(controller.isPreparingNewProjectPreview)
+
                     Text("All subtitles and the complete selected audio track remain in the project.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
         }
+    }
+
+    private func clipRangeEditor(_ draft: NewProjectDraft) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .bottom, spacing: 14) {
+                TimecodeEntry(
+                    title: "In point",
+                    value: clipStartBinding,
+                    validRange: 0...max(draft.metadata.duration - 1, 0)
+                )
+                Image(systemName: "arrow.right")
+                    .foregroundStyle(.tertiary)
+                    .padding(.bottom, 7)
+                TimecodeEntry(
+                    title: "Out point",
+                    value: clipEndBinding,
+                    validRange: min(1, draft.metadata.duration)...draft.metadata.duration
+                )
+            }
+
+            ClipRangeSummary(
+                movieDuration: draft.metadata.duration,
+                clipStart: draft.normalizedClipStart,
+                clipEnd: draft.normalizedClipEnd
+            )
+
+            HStack {
+                Button {
+                    controller.previewNewProjectSelection(startingAt: draft.normalizedClipStart)
+                } label: {
+                    Label("Preview In", systemImage: "play.fill")
+                }
+                Button {
+                    controller.previewNewProjectSelection(
+                        startingAt: max(draft.normalizedClipEnd - 12, draft.normalizedClipStart)
+                    )
+                } label: {
+                    Label("Preview Out", systemImage: "play.fill")
+                }
+                Spacer()
+                Menu("Set Length") {
+                    ForEach([60, 180, 300, 600], id: \.self) { seconds in
+                        Button(TimeFormatter.playbackTime(TimeInterval(seconds))) {
+                            updateDraft {
+                                $0.clipEndTime = min(
+                                    $0.normalizedClipStart + TimeInterval(seconds),
+                                    $0.metadata.duration
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            .disabled(controller.isPreparingNewProjectPreview)
+
+            Text("Enter time as HH:MM:SS, MM:SS, or seconds.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var clipStartBinding: Binding<TimeInterval> {
+        Binding(
+            get: { draft?.normalizedClipStart ?? 0 },
+            set: { newValue in
+                updateDraft {
+                    $0.clipStartTime = min(
+                        max(newValue, 0),
+                        max($0.normalizedClipEnd - 1, 0)
+                    )
+                }
+            }
+        )
+    }
+
+    private var clipEndBinding: Binding<TimeInterval> {
+        Binding(
+            get: { draft?.normalizedClipEnd ?? 1 },
+            set: { newValue in
+                updateDraft {
+                    $0.clipEndTime = min(
+                        max(newValue, $0.normalizedClipStart + 1),
+                        $0.metadata.duration
+                    )
+                }
+            }
+        )
     }
 
     @ViewBuilder
@@ -388,5 +448,112 @@ struct NewProjectAssistantView: View {
         let bytesPerSecond: Double = draft.effectiveStrategy == .embeddedMusicAndEffects ? 576_000 : 384_000
         let bytes = Int64(max(draft.selectedDuration, 0) * bytesPerSecond)
         return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+}
+
+private struct TimecodeEntry: View {
+    let title: String
+    @Binding var value: TimeInterval
+    let validRange: ClosedRange<TimeInterval>
+
+    @State private var text = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                TextField("00:00:00", text: $text)
+                    .font(.body.monospacedDigit())
+                    .textFieldStyle(.roundedBorder)
+                    .focused($isFocused)
+                    .onSubmit(commit)
+                Stepper(value: $value, in: validRange, step: 1) {
+                    EmptyView()
+                }
+                .labelsHidden()
+                .fixedSize()
+                .help("Adjust by one second")
+            }
+        }
+        .onAppear { text = Self.format(value) }
+        .onChange(of: value) { _, newValue in
+            guard !isFocused else { return }
+            text = Self.format(newValue)
+        }
+        .onChange(of: isFocused) { _, focused in
+            if !focused { commit() }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func commit() {
+        guard let parsed = Self.parse(text) else {
+            text = Self.format(value)
+            return
+        }
+        value = min(max(parsed, validRange.lowerBound), validRange.upperBound)
+        text = Self.format(value)
+    }
+
+    private static func parse(_ input: String) -> TimeInterval? {
+        let components = input
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")
+            .split(separator: ":", omittingEmptySubsequences: false)
+        guard (1...3).contains(components.count),
+              components.allSatisfy({ Double($0) != nil }) else { return nil }
+        let values = components.compactMap { Double($0) }
+        guard values.allSatisfy({ $0.isFinite && $0 >= 0 }) else { return nil }
+        switch values.count {
+        case 1:
+            return values[0]
+        case 2:
+            guard values[1] < 60 else { return nil }
+            return values[0] * 60 + values[1]
+        case 3:
+            guard values[1] < 60, values[2] < 60 else { return nil }
+            return values[0] * 3_600 + values[1] * 60 + values[2]
+        default:
+            return nil
+        }
+    }
+
+    private static func format(_ time: TimeInterval) -> String {
+        let milliseconds = max(Int((time * 1_000).rounded()), 0)
+        let hours = milliseconds / 3_600_000
+        let minutes = milliseconds / 60_000 % 60
+        let seconds = milliseconds / 1_000 % 60
+        let remainder = milliseconds % 1_000
+        return String(format: "%02d:%02d:%02d.%03d", hours, minutes, seconds, remainder)
+    }
+}
+
+private struct ClipRangeSummary: View {
+    let movieDuration: TimeInterval
+    let clipStart: TimeInterval
+    let clipEnd: TimeInterval
+
+    var body: some View {
+        GeometryReader { geometry in
+            let duration = max(movieDuration, 0.001)
+            let startX = geometry.size.width * clipStart / duration
+            let endX = geometry.size.width * clipEnd / duration
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(.quaternary)
+                Capsule()
+                    .fill(Color.accentColor.opacity(0.8))
+                    .frame(width: max(endX - startX, 3))
+                    .offset(x: startX)
+            }
+        }
+        .frame(height: 7)
+        .accessibilityLabel("Selected movie range")
+        .accessibilityValue(
+            "From \(TimeFormatter.playbackTime(clipStart)) to \(TimeFormatter.playbackTime(clipEnd))"
+        )
     }
 }

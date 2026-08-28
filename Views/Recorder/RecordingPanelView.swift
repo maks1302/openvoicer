@@ -70,12 +70,11 @@ struct RecordingActionButton: View {
             .tint(.red)
             .disabled(controller.selectedSegment == nil)
 
-        case .countdown(let value):
+        case .countdown:
             Button {
                 controller.toggleRecording()
             } label: {
-                Text("\(value)")
-                    .font(.title2.monospacedDigit().weight(.bold))
+                Label("Cancel Countdown", systemImage: "xmark")
                     .frame(maxWidth: .infinity, minHeight: 26)
             }
             .buttonStyle(.borderedProminent)

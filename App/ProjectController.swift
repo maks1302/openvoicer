@@ -62,6 +62,7 @@ final class ProjectController {
     @ObservationIgnored private var recordingTask: Task<Void, Never>?
     @ObservationIgnored private var automaticStopTask: Task<Void, Never>?
     @ObservationIgnored private var finishingRecordingTask: Task<Void, Never>?
+    @ObservationIgnored private var recordingVideoPlaybackActive = false
     @ObservationIgnored private var pendingTake: PendingRecordingTake?
     @ObservationIgnored private var audioPreparationTask: Task<Void, Never>?
     @ObservationIgnored private var continuousDubPreviewActive = false
@@ -225,7 +226,7 @@ final class ProjectController {
         }
     }
 
-    func previewNewProjectSelection() {
+    func previewNewProjectSelection(startingAt requestedStart: TimeInterval? = nil) {
         guard let draft = newProjectDraft,
               let trackIndex = draft.metadata.audioTracks.firstIndex(where: {
                   $0.id == draft.selectedAudioTrackID
@@ -234,9 +235,10 @@ final class ProjectController {
         auditioningNewProjectTrackID = nil
         newProjectPreviewStopTask?.cancel()
         newProjectPreviewTask?.cancel()
-        let start = draft.scopeMode == .clip
+        let defaultStart = draft.scopeMode == .clip
             ? draft.normalizedClipStart
             : min(max(draft.metadata.duration * 0.1, 30), max(draft.metadata.duration - 12, 0))
+        let start = min(max(requestedStart ?? defaultStart, 0), max(draft.metadata.duration - 0.1, 0))
         let duration = min(12, max(draft.metadata.duration - start, 0.1))
         isPreparingNewProjectPreview = true
 
@@ -984,6 +986,13 @@ final class ProjectController {
         save()
     }
 
+    func updatePlaySourceAudioWhileRecording(_ enabled: Bool) {
+        guard var project else { return }
+        project.settings.playSourceAudioWhileRecording = enabled
+        self.project = project
+        save()
+    }
+
     func importEmbeddedSubtitleTrack(_ track: EmbeddedSubtitleTrack) {
         Task { await extractAndImportEmbeddedTrack(track) }
     }
@@ -1405,6 +1414,11 @@ final class ProjectController {
     private func beginRecordingCurrentSegment() {
         guard let segment = selectedSegment, let project, let projectURL else { return }
         playback.pause()
+        playback.seek(to: segment.startTime)
+        playback.player.volume = project.settings.playSourceAudioWhileRecording
+            ? project.settings.originalVolume
+            : 0
+        recordingVideoPlaybackActive = true
         recording.stopTakePlayback()
 
         let takeID = UUID()
@@ -1428,13 +1442,27 @@ final class ProjectController {
                 )
                 guard !Task.isCancelled else {
                     recording.cancel()
+                    stopRecordingVideoPlayback()
                     return
                 }
-                scheduleAutomaticStop(after: max(segment.duration + 1.5, 2))
+                // Start the muted picture only after microphone capture is live.
+                // This gives the performer lip movement without recording the
+                // source dialogue through speakers.
+                let recordingPlaybackVolume: Float = project.settings.playSourceAudioWhileRecording
+                    ? project.settings.originalVolume
+                    : 0
+                playback.play(
+                    from: segment.startTime,
+                    to: segment.endTime,
+                    playbackVolume: recordingPlaybackVolume
+                )
+                scheduleAutomaticStop(after: max(segment.duration + 0.75, 2))
             } catch is CancellationError {
                 recording.cancel()
+                stopRecordingVideoPlayback()
             } catch {
                 pendingTake = nil
+                stopRecordingVideoPlayback()
                 present(error, fallback: "The microphone recording could not be started.")
             }
         }
@@ -1457,6 +1485,7 @@ final class ProjectController {
               let pendingTake else { return }
         automaticStopTask?.cancel()
         automaticStopTask = nil
+        stopRecordingVideoPlayback()
 
         finishingRecordingTask = Task { [weak self] in
             guard let self else { return }
@@ -1480,7 +1509,15 @@ final class ProjectController {
         finishingRecordingTask?.cancel()
         finishingRecordingTask = nil
         recording.cancel()
+        stopRecordingVideoPlayback()
         pendingTake = nil
+    }
+
+    private func stopRecordingVideoPlayback() {
+        guard recordingVideoPlaybackActive else { return }
+        recordingVideoPlaybackActive = false
+        playback.pause()
+        playback.player.volume = project?.settings.originalVolume ?? 1
     }
 
     private func addRecordingTake(_ pending: PendingRecordingTake, duration: TimeInterval) {

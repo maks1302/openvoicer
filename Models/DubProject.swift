@@ -173,6 +173,7 @@ struct ProjectSettings: Codable, Hashable, Sendable {
     var duckedOriginalVolume: Float = 0.2
     var selectedInputDeviceID: String?
     var recordingCountdownSeconds = 3
+    var playSourceAudioWhileRecording = false
     var recordingGain: Float = 1.0
     var dialogueCleaningPreset: DialogueCleaningPreset = .balanced
     var cleanBackgroundVolume: Float = 1.0
@@ -181,7 +182,7 @@ struct ProjectSettings: Codable, Hashable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case preRollDuration, postRollDuration, originalVolume, duckedOriginalVolume
-        case selectedInputDeviceID, recordingCountdownSeconds, recordingGain
+        case selectedInputDeviceID, recordingCountdownSeconds, playSourceAudioWhileRecording, recordingGain
         case dialogueCleaningPreset, cleanBackgroundVolume
         case selectedAudioTrackID, audioPreparationPreference
     }
@@ -196,6 +197,10 @@ struct ProjectSettings: Codable, Hashable, Sendable {
         duckedOriginalVolume = try container.decodeIfPresent(Float.self, forKey: .duckedOriginalVolume) ?? 0.2
         selectedInputDeviceID = try container.decodeIfPresent(String.self, forKey: .selectedInputDeviceID)
         recordingCountdownSeconds = try container.decodeIfPresent(Int.self, forKey: .recordingCountdownSeconds) ?? 3
+        playSourceAudioWhileRecording = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .playSourceAudioWhileRecording
+        ) ?? false
         recordingGain = try container.decodeIfPresent(Float.self, forKey: .recordingGain) ?? 1.0
         dialogueCleaningPreset = try container.decodeIfPresent(
             DialogueCleaningPreset.self,

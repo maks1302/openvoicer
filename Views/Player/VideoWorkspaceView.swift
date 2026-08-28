@@ -38,6 +38,8 @@ struct VideoWorkspaceView: View {
                             .foregroundStyle(.white)
                     }
                 }
+
+                recordingVideoOverlay
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .dropDestination(for: URL.self) { urls, _ in
@@ -68,6 +70,58 @@ struct VideoWorkspaceView: View {
             }
         }
         .foregroundStyle(.white.opacity(0.78))
+    }
+
+    @ViewBuilder
+    private var recordingVideoOverlay: some View {
+        switch controller.recording.state {
+        case .countdown(let value):
+            ZStack {
+                Color.black.opacity(0.18)
+                VStack(spacing: 5) {
+                    Text("GET READY")
+                        .font(.caption.weight(.semibold))
+                        .tracking(1.4)
+                    Text(value.formatted())
+                        .font(.system(size: 72, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 38)
+                .padding(.vertical, 22)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
+                .shadow(color: .black.opacity(0.35), radius: 20, y: 8)
+            }
+            .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            .allowsHitTesting(false)
+
+        case .recording:
+            VStack {
+                HStack {
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(.red)
+                            .frame(width: 9, height: 9)
+                        Text("REC")
+                            .font(.caption.weight(.bold))
+                            .tracking(0.8)
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 7)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    Spacer()
+                }
+                Spacer()
+            }
+            .padding(18)
+            .transition(.opacity)
+            .allowsHitTesting(false)
+
+        case .idle, .finishing:
+            EmptyView()
+        }
     }
 }
 

@@ -67,7 +67,6 @@ final class RecordingController {
             }
 
             try Task.checkCancellation()
-            state = .recording
             try await recorder.start(destinationURL: destinationURL, deviceID: deviceID) { [weak self] level, elapsed in
                 Task { @MainActor in
                     self?.inputLevel = level
@@ -75,6 +74,7 @@ final class RecordingController {
                     self?.appendLiveSample(level, at: elapsed)
                 }
             }
+            state = .recording
         } catch {
             state = .idle
             throw error

@@ -109,6 +109,7 @@ final class PlaybackController {
     func play(
         from startTime: TimeInterval,
         to endTime: TimeInterval,
+        playbackVolume: Float? = nil,
         onPlaybackStarted: (@MainActor @Sendable () -> Void)? = nil
     ) {
         guard endTime > startTime else { return }
@@ -127,6 +128,9 @@ final class PlaybackController {
         }
         seekWithoutCancelling(to: startTime) { [weak self] finished in
             guard finished, let self else { return }
+            if let playbackVolume {
+                self.player.volume = min(max(playbackVolume, 0), 1)
+            }
             self.player.play()
             self.isPlaying = true
             onPlaybackStarted?()

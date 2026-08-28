@@ -379,7 +379,14 @@ private struct MicrophoneInspectorView: View {
                 }
                 .disabled(controller.recording.isActive)
 
-                Text("The countdown begins after pressing Record and is not included in the saved take.")
+                Toggle("Play source audio while recording", isOn: sourceAudioDuringRecording)
+                    .disabled(controller.recording.isActive)
+
+                Text(
+                    sourceAudioDuringRecording.wrappedValue
+                        ? "Use headphones to prevent the movie audio from leaking into the microphone recording."
+                        : "The video plays silently after the countdown so you can follow the actor’s lips."
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -405,6 +412,13 @@ private struct MicrophoneInspectorView: View {
         Binding(
             get: { controller.project?.settings.recordingCountdownSeconds ?? 3 },
             set: { controller.updateRecordingCountdown($0) }
+        )
+    }
+
+    private var sourceAudioDuringRecording: Binding<Bool> {
+        Binding(
+            get: { controller.project?.settings.playSourceAudioWhileRecording ?? false },
+            set: { controller.updatePlaySourceAudioWhileRecording($0) }
         )
     }
 }
