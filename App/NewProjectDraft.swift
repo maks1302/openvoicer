@@ -10,6 +10,7 @@ struct NewProjectDraft: Identifiable {
     var clipStartTime: TimeInterval = 0
     var clipEndTime: TimeInterval
     var audioPreparationPreference: AudioPreparationPreference = .automatic
+    var dialogueCleaningPreset: DialogueCleaningPreset = .balanced
     var prepareBackgroundAfterCreation = true
     var selectedEmbeddedSubtitleStreamIndex: Int?
 

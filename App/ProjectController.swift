@@ -159,6 +159,7 @@ final class ProjectController {
             project.mediaScope = draft.mediaScope
             project.settings.selectedAudioTrackID = draft.selectedAudioTrackID
             project.settings.audioPreparationPreference = draft.audioPreparationPreference
+            project.settings.dialogueCleaningPreset = draft.dialogueCleaningPreset
             self.project = project
             if let index = project.sourceVideo?.metadata.audioTracks.firstIndex(where: {
                 $0.id == draft.selectedAudioTrackID
@@ -487,9 +488,14 @@ final class ProjectController {
     }
 
     var preparedAudioAsset: PreparedAudioAsset? {
-        guard let selectedAudioTrack, let projectURL else { return nil }
+        guard let selectedAudioTrack,
+              let projectURL,
+              let strategy = selectedAudioPreparationStrategy else { return nil }
+        let expectedModelID = preparedAudioModelID(strategy: strategy)
         return project?.preparedAudioAssets.first { asset in
-            guard asset.sourceAudioTrackID == selectedAudioTrack.id else { return false }
+            guard asset.sourceAudioTrackID == selectedAudioTrack.id,
+                  asset.strategy == strategy,
+                  asset.modelID == expectedModelID else { return false }
             let dialogueURL = projectURL.appending(path: "prepared-audio").appending(path: asset.dialogueFileName)
             let backgroundURL = projectURL.appending(path: "prepared-audio").appending(path: asset.backgroundFileName)
             return FileManager.default.fileExists(atPath: dialogueURL.path)
@@ -627,10 +633,10 @@ final class ProjectController {
         let preparationStart = max(0, projectRange.lowerBound - preparationHandle)
         let preparationEnd = min(sourceDuration, projectRange.upperBound + preparationHandle)
         let preparationDuration = max(0, preparationEnd - preparationStart)
+        let cleaningPreset = project?.settings.dialogueCleaningPreset ?? .balanced
         let workingDirectory = FileManager.default.temporaryDirectory
             .appending(path: "DubLab-MovieAudio-\(UUID().uuidString)", directoryHint: .isDirectory)
         let originalMixURL = workingDirectory.appending(path: "original-mix.wav")
-        let centerReferenceURL = workingDirectory.appending(path: "center-reference.wav")
         let dialogueURL = workingDirectory.appending(path: "dialogue.wav")
         let backgroundURL = workingDirectory.appending(path: "background.wav")
 
@@ -688,30 +694,17 @@ final class ProjectController {
                     finishMovieAudioPreparation(workingDirectory: workingDirectory)
 
                 case .surroundAssisted, .cinematicSeparation:
-                    var dialogueInputURL: URL?
-                    if strategy == .surroundAssisted {
-                        audioPreparationProgress = 0.16
-                        audioPreparationMessage = "Extracting the surround center dialogue reference…"
-                        try await ffmpegService.extractAudioTrack(
-                            from: sourceURL,
-                            audioTrackIndex: audioTrackIndex,
-                            mode: .centerReference,
-                            startTime: preparationStart,
-                            duration: preparationDuration,
-                            destination: centerReferenceURL
-                        )
-                        dialogueInputURL = centerReferenceURL
-                    }
                     try Task.checkCancellation()
                     audioPreparationProgress = 0.22
                     audioPreparationMessage = strategy == .surroundAssisted
-                        ? "Separating center dialogue while preserving the movie mix…"
+                        ? "Separating the complete surround movie mix…"
                         : "Separating continuous dialogue, music, and effects…"
                     sourceSeparation.prepare(
                         inputURL: originalMixURL,
                         outputURL: backgroundURL,
                         dialogueOutputURL: dialogueURL,
-                        dialogueInputURL: dialogueInputURL
+                        dialogueInputURL: nil,
+                        cleaningPreset: cleaningPreset
                     ) { [weak self] result in
                         guard let self else { return }
                         switch result {
@@ -822,7 +815,17 @@ final class ProjectController {
 
     func updateAudioPreparationPreference(_ preference: AudioPreparationPreference) {
         guard var project else { return }
+        stopContinuousDubOverlay()
         project.settings.audioPreparationPreference = preference
+        self.project = project
+        save()
+    }
+
+    func updateDialogueCleaningPreset(_ preset: DialogueCleaningPreset) {
+        guard var project,
+              project.settings.dialogueCleaningPreset != preset else { return }
+        stopContinuousDubOverlay()
+        project.settings.dialogueCleaningPreset = preset
         self.project = project
         save()
     }
@@ -1603,10 +1606,13 @@ final class ProjectController {
     }
 
     private func preparedAudioModelID(strategy: AudioPreparationStrategy) -> String {
-        switch strategy {
+        let preset = project?.settings.dialogueCleaningPreset ?? .balanced
+        return switch strategy {
         case .embeddedMusicAndEffects: "embedded-me-difference-v1"
-        case .surroundAssisted: "\(BanditSourceSeparationService.modelID)-center-reference-continuous-v1"
-        case .cinematicSeparation: "\(BanditSourceSeparationService.modelID)-continuous-v1"
+        case .surroundAssisted:
+            "\(BanditSourceSeparationService.modelID)-surround-fullmix-\(preset.rawValue)-continuous-v2"
+        case .cinematicSeparation:
+            "\(BanditSourceSeparationService.modelID)-fullmix-\(preset.rawValue)-continuous-v2"
         }
     }
 

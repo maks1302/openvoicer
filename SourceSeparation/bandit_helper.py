@@ -12,6 +12,13 @@ from pathlib import Path
 import numpy as np
 
 
+CLEANING_STRENGTHS = {
+    "gentle": np.float32(0.0),
+    "balanced": np.float32(0.65),
+    "strong": np.float32(1.0),
+}
+
+
 def report(stage: str, progress: float, detail: str) -> None:
     print(json.dumps({"stage": stage, "progress": progress, "detail": detail}), flush=True)
 
@@ -27,6 +34,61 @@ def read_pcm16_frames(source: wave.Wave_read, start: int, count: int) -> np.ndar
 def pcm16_bytes(audio: np.ndarray) -> bytes:
     interleaved = np.clip(audio.T, -1.0, 1.0)
     return (interleaved * 32767.0).astype("<i2").tobytes()
+
+
+def stem_with_shape(stems: dict[str, np.ndarray], name: str, shape: tuple[int, int]) -> np.ndarray:
+    if name not in stems:
+        raise ValueError(f"Bandit did not produce its {name} stem")
+    stem = np.asarray(stems[name], dtype=np.float32)
+    if stem.shape != shape:
+        raise ValueError(
+            f"Bandit's {name} stem shape {stem.shape} does not match the movie mix {shape}"
+        )
+    return np.nan_to_num(stem, nan=0.0, posinf=1.0, neginf=-1.0)
+
+
+def build_complementary_stems(
+    audio: np.ndarray,
+    stems: dict[str, np.ndarray],
+    cleaning_preset: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Create stems that reconstruct the source while honoring quality mode.
+
+    Bandit's speech estimate alone is deliberately conservative. Subtracting
+    only that estimate leaves every missed syllable in the background. Bandit
+    also predicts music and effects directly; stronger modes increasingly use
+    those dialogue-free estimates. Dialogue is then defined as the exact
+    complement so normal playback still reconstructs the source continuously.
+    """
+    try:
+        direct_strength = CLEANING_STRENGTHS[cleaning_preset]
+    except KeyError as error:
+        raise ValueError(f"Unknown dialogue cleaning preset: {cleaning_preset}") from error
+
+    shape = audio.shape
+    speech = stem_with_shape(stems, "speech", shape)
+    music = stem_with_shape(stems, "music", shape)
+    effects = stem_with_shape(stems, "effects", shape)
+
+    # Keep the conservative residual representable before blending it with
+    # Bandit's direct dialogue-free prediction.
+    minimum_dialogue = np.maximum(-1.0, audio - 1.0)
+    maximum_dialogue = np.minimum(1.0, audio + 1.0)
+    speech = np.clip(speech, minimum_dialogue, maximum_dialogue)
+    residual_background = audio - speech
+    direct_background = music + effects
+    background = (
+        residual_background * (np.float32(1.0) - direct_strength)
+        + direct_background * direct_strength
+    )
+
+    # Both stems are stored as PCM16. Constrain the background to the range in
+    # which it and its exact complement remain representable without clipping.
+    minimum_background = np.maximum(-1.0, audio - 1.0)
+    maximum_background = np.minimum(1.0, audio + 1.0)
+    background = np.clip(background, minimum_background, maximum_background)
+    dialogue = audio - background
+    return dialogue.astype(np.float32), background.astype(np.float32)
 
 
 def load_session(weights: Path):
@@ -45,6 +107,7 @@ def separate_streaming(
     background_path: Path,
     dialogue_path: Path | None,
     dialogue_input_path: Path | None,
+    cleaning_preset: str,
 ) -> None:
     """Separate long movies in bounded-memory overlapping regions.
 
@@ -100,31 +163,24 @@ def separate_streaming(
                                 "The extracted movie audio has an invalid duration header. "
                                 "Prepare the movie audio again with this version of DubLab."
                             )
-                        inference_audio = (
-                            read_pcm16_frames(reference, start, count)
-                            if reference is not None
-                            else audio
-                        )
-                        if reference is not None and inference_audio.shape[1] != count:
+                        if reference is not None:
+                            reference_audio = read_pcm16_frames(reference, start, count)
+                        else:
+                            reference_audio = None
+                        if reference_audio is not None and reference_audio.shape[1] != count:
                             raise ValueError(
                                 "The extracted center reference has an invalid duration header. "
                                 "Prepare the movie audio again with this version of DubLab."
                             )
-                        stems = session.infer(inference_audio, sample_rate=sample_rate)
-                        dialogue = stems["speech"]
-                        if reference is not None:
-                            if output_channels != 2 or dialogue.shape[0] != 1:
-                                raise ValueError(
-                                    "Surround-assisted preparation requires stereo mix and mono center reference"
-                                )
-                            dialogue = np.repeat(dialogue * np.float32(0.70710678), 2, axis=0)
-                        # Keep both integer PCM stems representable without
-                        # clipping either independently. Their sum consequently
-                        # reconstructs the source mix to within one PCM step.
-                        minimum_dialogue = np.maximum(-1.0, audio - 1.0)
-                        maximum_dialogue = np.minimum(1.0, audio + 1.0)
-                        dialogue = np.clip(dialogue, minimum_dialogue, maximum_dialogue)
-                        background = audio - dialogue
+                        # Always infer from the complete movie mix. The former
+                        # center-only path discarded stereo context and caused a
+                        # major dialogue-removal regression on surround sources.
+                        stems = session.infer(audio, sample_rate=sample_rate)
+                        dialogue, background = build_complementary_stems(
+                            audio,
+                            stems,
+                            cleaning_preset,
+                        )
 
                         is_final = start + count >= total_frames
                         if pending_dialogue is None:
@@ -196,6 +252,11 @@ def main() -> int:
     parser.add_argument("--background", type=Path)
     parser.add_argument("--dialogue", type=Path)
     parser.add_argument("--dialogue-input", type=Path)
+    parser.add_argument(
+        "--cleaning-preset",
+        choices=tuple(CLEANING_STRENGTHS),
+        default="balanced",
+    )
     args = parser.parse_args()
 
     session = load_session(args.weights)
@@ -212,6 +273,7 @@ def main() -> int:
         background_path=args.background,
         dialogue_path=args.dialogue,
         dialogue_input_path=args.dialogue_input,
+        cleaning_preset=args.cleaning_preset,
     )
     report("output", 0.9, "Finalizing continuous movie stems")
     report("complete", 1.0, "Clean background is ready")

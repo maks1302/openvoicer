@@ -31,6 +31,7 @@ final class SourceSeparationController {
         outputURL: URL,
         dialogueOutputURL: URL? = nil,
         dialogueInputURL: URL? = nil,
+        cleaningPreset: DialogueCleaningPreset,
         completion: @escaping @MainActor (Result<Void, Error>) -> Void
     ) {
         guard !isBusy else { return }
@@ -55,7 +56,8 @@ final class SourceSeparationController {
                     inputURL: inputURL,
                     outputURL: outputURL,
                     dialogueOutputURL: dialogueOutputURL,
-                    dialogueInputURL: dialogueInputURL
+                    dialogueInputURL: dialogueInputURL,
+                    cleaningPreset: cleaningPreset
                 ) { [weak self] update in
                     Task { @MainActor in
                         self?.progress = update.fraction

@@ -247,9 +247,9 @@ enum DialogueCleaningPreset: String, Codable, CaseIterable, Identifiable, Hashab
 
     var detail: String {
         switch self {
-        case .gentle: "Preserves more music and effects, with more chance of dialogue leakage."
-        case .balanced: "Reduces dialogue while retaining most of the surrounding mix."
-        case .strong: "Removes the most dialogue, but may soften centered music and effects."
+        case .gentle: "Uses speech subtraction to preserve the surrounding mix, but may leave dialogue behind."
+        case .balanced: "Blends reconstruction with Bandit’s music and effects stems for cleaner dialogue removal."
+        case .strong: "Uses Bandit’s direct music and effects stems for maximum dialogue removal."
         }
     }
 
@@ -266,8 +266,8 @@ enum DialogueCleaningPreset: String, Codable, CaseIterable, Identifiable, Hashab
     var residualSuppressionStrength: Double {
         switch self {
         case .gentle: 0
-        case .balanced: 0.3
-        case .strong: 0.82
+        case .balanced: 0.65
+        case .strong: 1.0
         }
     }
 }

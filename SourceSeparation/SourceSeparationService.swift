@@ -14,6 +14,7 @@ protocol SourceSeparationService: Sendable {
         outputURL: URL,
         dialogueOutputURL: URL?,
         dialogueInputURL: URL?,
+        cleaningPreset: DialogueCleaningPreset,
         progress: @escaping @Sendable (SourceSeparationProgress) -> Void
     ) async throws
     func cancel() async
@@ -74,6 +75,7 @@ actor BanditSourceSeparationService: SourceSeparationService {
         outputURL: URL,
         dialogueOutputURL: URL?,
         dialogueInputURL: URL?,
+        cleaningPreset: DialogueCleaningPreset,
         progress: @escaping @Sendable (SourceSeparationProgress) -> Void
     ) async throws {
         guard isRuntimeReady() else { throw SourceSeparationError.runtimeUnavailable }
@@ -84,7 +86,8 @@ actor BanditSourceSeparationService: SourceSeparationService {
         var arguments = [
             "--weights", weightsDirectory.path,
             "--input", inputURL.path,
-            "--background", outputURL.path
+            "--background", outputURL.path,
+            "--cleaning-preset", cleaningPreset.rawValue
         ]
         if let dialogueOutputURL {
             arguments += ["--dialogue", dialogueOutputURL.path]

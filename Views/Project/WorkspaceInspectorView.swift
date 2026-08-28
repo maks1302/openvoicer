@@ -516,6 +516,18 @@ private struct AudioInspectorView: View {
                     }
                 }
 
+                if controller.selectedAudioPreparationStrategy == .surroundAssisted
+                    || controller.selectedAudioPreparationStrategy == .cinematicSeparation {
+                    Picker("Dialogue removal", selection: cleaningPreset) {
+                        ForEach(DialogueCleaningPreset.allCases) { preset in
+                            Text(preset.title).tag(preset)
+                        }
+                    }
+                    Text(cleaningPreset.wrappedValue.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("Background level")
@@ -604,6 +616,13 @@ private struct AudioInspectorView: View {
         )
     }
 
+    private var cleaningPreset: Binding<DialogueCleaningPreset> {
+        Binding(
+            get: { controller.project?.settings.dialogueCleaningPreset ?? .balanced },
+            set: { controller.updateDialogueCleaningPreset($0) }
+        )
+    }
+
     private func trackLabel(_ track: AudioTrackMetadata) -> String {
         [
             track.title,
@@ -623,7 +642,7 @@ private struct AudioInspectorView: View {
             let name = controller.musicAndEffectsCandidate?.title ?? "the detected M&E track"
             return "Use \(name) as the continuous background and derive a synchronized dialogue guide without AI."
         case .surroundAssisted:
-            return "Preserve the selected surround mix while using its center channel as the dialogue reference for local AI separation."
+            return "Use a consistent surround downmix and run local AI on the complete movie mix, preserving stereo context while separating dialogue."
         case .cinematicSeparation:
             return "Use local cinematic AI once for the complete selected stereo track, producing continuous dialogue and background stems."
         }

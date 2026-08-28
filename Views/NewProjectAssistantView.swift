@@ -235,6 +235,21 @@ struct NewProjectAssistantView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                if draft.effectiveStrategy == .surroundAssisted
+                    || draft.effectiveStrategy == .cinematicSeparation {
+                    Picker(
+                        "Dialogue removal",
+                        selection: binding(\.dialogueCleaningPreset, fallback: .balanced)
+                    ) {
+                        ForEach(DialogueCleaningPreset.allCases) { preset in
+                            Text(preset.title).tag(preset)
+                        }
+                    }
+                    Text(draft.dialogueCleaningPreset.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 if draft.effectiveStrategy != nil {
                     Toggle(
                         "Prepare clean background after creating",
@@ -341,7 +356,7 @@ struct NewProjectAssistantView: View {
     private func preparationHeadline(_ draft: NewProjectDraft) -> String {
         switch draft.effectiveStrategy {
         case .embeddedMusicAndEffects: "Best preservation · no AI required"
-        case .surroundAssisted: "Center-guided local separation"
+        case .surroundAssisted: "Surround-aware full-mix separation"
         case .cinematicSeparation: "Local full-mix AI separation"
         case nil: "Instant setup · original dialogue remains"
         }
@@ -361,7 +376,7 @@ struct NewProjectAssistantView: View {
         case .embeddedMusicAndEffects:
             "Use the detected M&E stream as continuous background. Audition it first because container metadata is not always trustworthy."
         case .surroundAssisted:
-            "Preserve the selected surround mix while using its center channel as a dialogue reference for Bandit."
+            "Downmix the selected surround track consistently, then run Bandit on the complete mix so stereo context is preserved."
         case .cinematicSeparation:
             "Run Bandit across the selected range once and cache continuous dialogue and background stems."
         case nil:
