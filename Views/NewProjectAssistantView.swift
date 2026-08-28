@@ -222,10 +222,7 @@ struct NewProjectAssistantView: View {
             get: { draft?.normalizedClipStart ?? 0 },
             set: { newValue in
                 updateDraft {
-                    $0.clipStartTime = min(
-                        max(newValue, 0),
-                        max($0.normalizedClipEnd - 1, 0)
-                    )
+                    $0.setClipStart(newValue)
                 }
             }
         )
@@ -236,10 +233,7 @@ struct NewProjectAssistantView: View {
             get: { draft?.normalizedClipEnd ?? 1 },
             set: { newValue in
                 updateDraft {
-                    $0.clipEndTime = min(
-                        max(newValue, $0.normalizedClipStart + 1),
-                        $0.metadata.duration
-                    )
+                    $0.setClipEnd(newValue)
                 }
             }
         )

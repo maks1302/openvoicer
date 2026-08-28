@@ -80,6 +80,30 @@ struct NewProjectDraft: Identifiable {
             && (scopeMode == .fullMovie || normalizedClipEnd > normalizedClipStart)
     }
 
+    mutating func setClipStart(_ requestedStart: TimeInterval) {
+        let previousStart = normalizedClipStart
+        let previousEnd = normalizedClipEnd
+        let previousDuration = max(previousEnd - previousStart, 1)
+        let newStart = min(max(requestedStart, 0), max(metadata.duration - 1, 0))
+
+        clipStartTime = newStart
+        if newStart >= previousEnd {
+            clipEndTime = min(newStart + previousDuration, metadata.duration)
+        }
+    }
+
+    mutating func setClipEnd(_ requestedEnd: TimeInterval) {
+        let previousStart = normalizedClipStart
+        let previousEnd = normalizedClipEnd
+        let previousDuration = max(previousEnd - previousStart, 1)
+        let newEnd = min(max(requestedEnd, min(metadata.duration, 1)), metadata.duration)
+
+        clipEndTime = newEnd
+        if newEnd <= previousStart {
+            clipStartTime = max(newEnd - previousDuration, 0)
+        }
+    }
+
     func supports(_ preference: AudioPreparationPreference) -> Bool {
         switch preference {
         case .automatic, .cinematicSeparation, .duckingOnly:
