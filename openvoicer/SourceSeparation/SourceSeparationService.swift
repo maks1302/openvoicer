@@ -47,7 +47,11 @@ actor BanditSourceSeparationService: SourceSeparationService {
         progress(.init(fraction: 0.02, message: "Creating the local separation runtime…"))
         try await run(
             executable: uvURL,
-            arguments: ["venv", "--python", bootstrapPythonURL.path, environmentURL.path]
+            arguments: [
+                "venv", "--clear",
+                "--python", bootstrapPythonURL.path,
+                environmentURL.path
+            ]
         )
 
         progress(.init(fraction: 0.12, message: "Installing the Apple Silicon audio engine…"))

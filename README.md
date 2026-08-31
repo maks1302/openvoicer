@@ -139,7 +139,7 @@ The first separation setup downloads a pinned `bandit-infer` revision, its Pytho
 open openvoicer.xcodeproj
 ```
 
-Select the **openvoicer** scheme and run the macOS app. Xcode signing is the easiest way to test microphone access and sandboxed file permissions locally.
+Select the **openvoicer** scheme and run the macOS app. The Debug configuration is intentionally unsandboxed because its development-only source-separation setup downloads and executes a Python/MLX environment. Release builds remain sandboxed and must bundle signed and notarized media dependencies before distribution.
 
 For a command-line compile check:
 
